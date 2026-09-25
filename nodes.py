@@ -126,6 +126,24 @@ async def save_latest(request):
     return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "images": len(scene["image_paths"]), "media": len(scene["media"]["outputs"])})
 
 
+@PromptServer.instance.routes.post("/h3_scene_batch/open_folder")
+async def open_folder(request):
+    data = await request.json()
+    try:
+        project_dir = data["project_dir"]
+        if not isinstance(project_dir, str) or not project_dir.strip():
+            raise ValueError("保存先フォルダを指定してください。")
+        if os.name != "nt":
+            raise ValueError("フォルダを開く機能はWindows上のComfyUIで利用できます。")
+        project = Path(project_dir).expanduser().resolve()
+        if not project.is_dir():
+            raise ValueError("保存先フォルダがありません。先にシーンを保存してください。")
+        os.startfile(str(project))
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+    return web.json_response({"path": str(project)})
+
+
 class H3SceneCapture:
     @classmethod
     def INPUT_TYPES(cls):
