@@ -4,6 +4,44 @@ from pathlib import Path
 from uuid import uuid4
 
 
+def add_mode_switch(workflow):
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+    if "scene_batch" in nodes[830]["properties"]:
+        return workflow
+    links = {link[0]: link for link in workflow["links"]}
+    routes = []
+    for target_id in (817, 92):
+        for item in nodes[target_id]["inputs"]:
+            name = item["name"]
+            if name not in ("prompt", "noise_seed", "value_1", "filename_prefix") and not name.startswith("ref_"):
+                continue
+            link = links.get(item["link"])
+            scene = None
+            if name == "prompt":
+                scene = [822, 1]
+            elif name.startswith("ref_images.ref_image_"):
+                scene = [600 + int(name.rsplit("_", 1)[1]), 0]
+            elif name == "ref_audios.ref_audio_0":
+                scene = [802, 0]
+            routes.append({"target": target_id, "input": name, "scene": scene, "batch": link[1:3] if link else None})
+    nodes[830]["properties"]["scene_batch"] = {
+        "mode": "batch",
+        "routes": routes,
+        "node_modes": {
+            "scene": {str(i): 0 for i in (822, 224, 805)},
+            "batch": {str(i): nodes[i]["mode"] for i in range(831, 841)},
+        },
+    }
+    for node_id in range(831, 841):
+        nodes[node_id]["pos"][1] += 750
+    workflow["groups"].append({
+        "id": max((group["id"] for group in workflow["groups"]), default=0) + 1,
+        "title": "バッチ生成（H3 Scene Capture の実行モードで切替）",
+        "bounding": [-2090, 2370, 2090, 850], "color": "#5b8065", "flags": {},
+    })
+    return workflow
+
+
 def connect_saved_media(workflow):
     nodes = {node["id"]: node for node in workflow["nodes"]}
     batch, generator = nodes[831], nodes[817]
@@ -124,7 +162,7 @@ def make_batch_workflow(source):
         nodes[node_id]["mode"] = 4
     workflow["last_node_id"] = 840
     workflow["last_link_id"] = next_link - 1
-    return connect_saved_media(workflow)
+    return add_mode_switch(connect_saved_media(workflow))
 
 
 if __name__ == "__main__":
