@@ -57,6 +57,15 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
     return str(manifest)
 
 
+def next_scene_id(project_dir):
+    if not project_dir.strip():
+        raise ValueError("Set a project directory.")
+    manifest = Path(project_dir).expanduser().resolve() / "scenes.json"
+    scenes = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else []
+    numbers = [int(match.group(1)) for scene in scenes if (match := re.fullmatch(r"scene(\d+)", scene["id"]))]
+    return f"scene{max(numbers, default=0) + 1:02d}"
+
+
 def latest_scene(history):
     for prompt_id, entry in reversed(list(history.items())):
         graph = entry["prompt"][2]
@@ -96,13 +105,14 @@ async def save_latest(request):
     try:
         history = PromptServer.instance.prompt_queue.get_history(max_items=20)
         scene = latest_scene(history)
+        scene_id = next_scene_id(data["project_dir"])
         path = save_scene(
-            data["project_dir"], data["scene_id"], scene["prompt"],
+            data["project_dir"], scene_id, scene["prompt"],
             "\n".join(scene["image_paths"]), scene["seed"], scene["duration"],
         )
     except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"path": path, "prompt_id": scene["prompt_id"], "images": len(scene["image_paths"])})
+    return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "images": len(scene["image_paths"])})
 
 
 class H3SceneCapture:
@@ -110,14 +120,13 @@ class H3SceneCapture:
     def INPUT_TYPES(cls):
         return {"required": {
             "project_dir": ("STRING", {"default": ""}),
-            "scene_id": ("STRING", {"default": "scene01"}),
         }}
 
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "MiniMax H3/Scene Batch"
 
-    def noop(self, project_dir, scene_id):
+    def noop(self, project_dir):
         return ()
 
 

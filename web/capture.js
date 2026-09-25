@@ -14,11 +14,11 @@ app.registerExtension({
           const response = await api.fetchApi("/h3_scene_batch/save_latest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ project_dir: value("project_dir"), scene_id: value("scene_id") }),
+            body: JSON.stringify({ project_dir: value("project_dir") }),
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || `Save failed (${response.status})`);
-          app.ui.dialog.show(`保存しました: ${data.path}\n画像 ${data.images} 枚`);
+          app.ui.dialog.show(`${data.scene_id} を保存しました: ${data.path}\n画像 ${data.images} 枚`);
         } catch (error) {
           app.ui.dialog.show(error.message);
         }
