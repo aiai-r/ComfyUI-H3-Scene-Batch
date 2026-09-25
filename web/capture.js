@@ -18,7 +18,7 @@ app.registerExtension({
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || `Save failed (${response.status})`);
-          app.ui.dialog.show(`${data.scene_id} を保存しました: ${data.path}\n画像 ${data.images} 枚`);
+          app.ui.dialog.show(`${data.scene_id} を保存しました: ${data.path}\n画像 ${data.images} 枚、音声・動画の参照 ${data.media} 件`);
         } catch (error) {
           app.ui.dialog.show(error.message);
         }

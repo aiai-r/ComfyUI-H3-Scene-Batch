@@ -10,10 +10,13 @@ from aiohttp import web
 from PIL import Image, ImageOps
 
 import folder_paths
+from comfy_api.latest import InputImpl
+from comfy_extras.nodes_audio import load as load_audio
 from server import PromptServer
+from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media
 
 
-def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
+def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None):
     if not project_dir.strip():
         raise ValueError("Set a project directory.")
     if not prompt.strip():
@@ -28,8 +31,8 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
         if not source.is_absolute():
             source = Path(folder_paths.get_input_directory()) / source
         sources.append(source.resolve())
-    if not 1 <= len(sources) <= 9:
-        raise ValueError("Enter 1 to 9 image paths, one per line.")
+    if len(sources) > 9:
+        raise ValueError("Enter up to 9 image paths, one per line.")
     for source in sources:
         if not source.is_file():
             raise FileNotFoundError(source)
@@ -51,7 +54,10 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
         shutil.copy2(source, target)
         images.append(target.relative_to(project / "images").as_posix())
 
-    scenes.append({"id": scene_id, "prompt": prompt, "images": images, "seed": seed, "duration": duration})
+    scene = {"id": scene_id, "prompt": prompt, "images": images, "seed": seed, "duration": duration}
+    if media is not None:
+        scene["media"] = copy_media(media, project / "images", scene_id)
+    scenes.append(scene)
     temporary = manifest.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(scenes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, manifest)
@@ -77,10 +83,14 @@ def latest_scene(history):
         if graph["224"]["inputs"]["source"] != references["prompt"]:
             raise ValueError("The preview prompt does not match the generated video prompt.")
         image_paths = []
+        missing_image = False
         for index in range(9):
             link = references.get(f"ref_images.ref_image_{index}")
             if link is None:
-                break
+                missing_image = True
+                continue
+            if missing_image:
+                raise ValueError("Connect reference images without empty slots before saving.")
             source = graph[str(link[0])]
             if source["class_type"] == "LoadImage":
                 image_paths.append(folder_paths.get_annotated_filepath(source["inputs"]["image"]))
@@ -88,14 +98,13 @@ def latest_scene(history):
                 image_paths.append(source["inputs"]["path"])
             else:
                 raise ValueError(f"Unsupported reference image source: {source['class_type']}")
-        if not image_paths:
-            raise ValueError("The latest H3 run has no reference images.")
         return {
             "prompt_id": prompt_id,
             "prompt": output[0],
             "image_paths": image_paths,
             "seed": graph["817:129"]["inputs"]["noise_seed"],
             "duration": graph["817:819"]["inputs"]["value"],
+            "media": capture_media(graph, references),
         }
     raise ValueError("No completed run of this H3 workflow was found in recent history.")
 
@@ -110,10 +119,11 @@ async def save_latest(request):
         path = save_scene(
             data["project_dir"], scene_id, scene["prompt"],
             "\n".join(scene["image_paths"]), scene["seed"], scene["duration"],
+            scene["media"],
         )
     except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "images": len(scene["image_paths"])})
+    return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "images": len(scene["image_paths"]), "media": len(scene["media"]["outputs"])})
 
 
 class H3SceneCapture:
@@ -149,6 +159,33 @@ class H3SceneImagePath:
         return (torch.from_numpy(pixels).unsqueeze(0),)
 
 
+class H3SceneAudioPath:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"path": ("STRING", {"default": ""})}}
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "load"
+    CATEGORY = "MiniMax H3/Scene Batch"
+
+    def load(self, path):
+        waveform, sample_rate = load_audio(path)
+        return ({"waveform": waveform.unsqueeze(0), "sample_rate": sample_rate},)
+
+
+class H3SceneVideoPath:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"path": ("STRING", {"default": ""})}}
+
+    RETURN_TYPES = ("VIDEO",)
+    FUNCTION = "load"
+    CATEGORY = "MiniMax H3/Scene Batch"
+
+    def load(self, path):
+        return (InputImpl.VideoFromFile(path),)
+
+
 class H3SceneBatchLoad:
     @classmethod
     def INPUT_TYPES(cls):
@@ -159,8 +196,8 @@ class H3SceneBatchLoad:
             "auto_queue": ("BOOLEAN", {"default": True}),
         }}
 
-    RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("STRING",) * 10
-    RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_path_{i}" for i in range(1, 10)) + ("filename_prefix",)
+    RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("STRING",) * 10 + tuple(kind for _, kind in MEDIA_INPUTS)
+    RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_path_{i}" for i in range(1, 10)) + ("filename_prefix",) + tuple(name.split(".")[1] for name, _ in MEDIA_INPUTS)
     FUNCTION = "load"
     CATEGORY = "MiniMax H3/Scene Batch"
 
@@ -177,8 +214,8 @@ class H3SceneBatchLoad:
         root = Path(image_root).expanduser().resolve()
         scene = scenes[start_at]
         images = scene["images"]
-        if not 1 <= len(images) <= 9:
-            raise ValueError(f"{scene['id']}: expected 1 to 9 images.")
+        if len(images) > 9:
+            raise ValueError(f"{scene['id']}: expected up to 9 images.")
         paths = []
         for index in range(9):
             if index < len(images):
@@ -188,8 +225,10 @@ class H3SceneBatchLoad:
                 paths.append(str(path))
             else:
                 paths.append("")
+        expanded, media = expand_media(scene.get("media", {}), root)
         return {
-            "result": (scene["prompt"], scene["seed"], scene["duration"], *paths, f"h3_scenes/{scene['id']}"),
+            "result": (scene["prompt"], scene["seed"], scene["duration"], *paths, f"h3_scenes/{scene['id']}", *media),
+            "expand": expanded,
             "ui": {"start_at": [start_at], "scene_count": [len(scenes)]},
         }
 
@@ -198,9 +237,13 @@ NODE_CLASS_MAPPINGS = {
     "H3SceneCapture": H3SceneCapture,
     "H3SceneImagePath": H3SceneImagePath,
     "H3SceneBatchLoad": H3SceneBatchLoad,
+    "H3SceneAudioPath": H3SceneAudioPath,
+    "H3SceneVideoPath": H3SceneVideoPath,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3SceneCapture": "H3 Scene Capture",
     "H3SceneImagePath": "H3 Scene Image Path",
     "H3SceneBatchLoad": "H3 Scene Batch Load",
+    "H3SceneAudioPath": "H3 Scene Audio Path",
+    "H3SceneVideoPath": "H3 Scene Video Path",
 }

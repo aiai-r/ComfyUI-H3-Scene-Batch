@@ -1,6 +1,56 @@
 import copy
 import json
 from pathlib import Path
+from uuid import uuid4
+
+
+def connect_saved_media(workflow):
+    nodes = {node["id"]: node for node in workflow["nodes"]}
+    batch, generator = nodes[831], nodes[817]
+    subgraph = next(item for item in workflow["definitions"]["subgraphs"] if item["id"] == generator["type"])
+    reference = next(node for node in subgraph["nodes"] if node["id"] == 136)
+    media_inputs = [
+        (f"{group}.{name}_{index}", kind)
+        for group, name, kind in (
+            ("ref_audios", "ref_audio", "AUDIO"),
+            ("ref_videos", "ref_video", "IMAGE"),
+            ("ref_video_audios", "ref_video_audio", "AUDIO"),
+        ) for index in range(3)
+    ]
+    for name, kind in media_inputs:
+        output_name = name.split(".")[1]
+        output_slot = next((i for i, item in enumerate(batch["outputs"]) if item["name"] == output_name), None)
+        if output_slot is None:
+            output_slot = len(batch["outputs"])
+            batch["outputs"].append({"name": output_name, "type": kind, "links": []})
+        target_slot = next((i for i, item in enumerate(generator["inputs"]) if item["name"] == name), None)
+        if target_slot is None:
+            target_slot = len(generator["inputs"])
+            generator["inputs"].append({"name": name, "type": kind, "shape": 7, "link": None})
+            subgraph["inputs"].append({"id": str(uuid4()), "name": name, "type": kind, "linkIds": []})
+        entry_slot = next(i for i, item in enumerate(subgraph["inputs"]) if item["name"] == name)
+        inner_slot = next(i for i, item in enumerate(reference["inputs"]) if item["name"] == name)
+        if reference["inputs"][inner_slot]["link"] is None:
+            subgraph["state"]["lastLinkId"] += 1
+            link_id = subgraph["state"]["lastLinkId"]
+            subgraph["links"].append({"id": link_id, "origin_id": subgraph["inputNode"]["id"], "origin_slot": entry_slot, "target_id": 136, "target_slot": inner_slot, "type": kind})
+            reference["inputs"][inner_slot]["link"] = link_id
+            subgraph["inputs"][entry_slot]["linkIds"].append(link_id)
+        old_id = generator["inputs"][target_slot]["link"]
+        if old_id is not None:
+            old = next(link for link in workflow["links"] if link[0] == old_id)
+            if old[1:3] == [831, output_slot]:
+                continue
+            origin = nodes[old[1]]["outputs"][old[2]]
+            origin["links"].remove(old_id)
+            workflow["links"].remove(old)
+        workflow["last_link_id"] += 1
+        link_id = workflow["last_link_id"]
+        workflow["links"].append([link_id, 831, output_slot, 817, target_slot, kind])
+        batch["outputs"][output_slot]["links"].append(link_id)
+        generator["inputs"][target_slot]["link"] = link_id
+    batch["size"][1] = max(batch["size"][1], 520)
+    return workflow
 
 
 def make_batch_workflow(source):
@@ -74,7 +124,7 @@ def make_batch_workflow(source):
         nodes[node_id]["mode"] = 4
     workflow["last_node_id"] = 840
     workflow["last_link_id"] = next_link - 1
-    return workflow
+    return connect_saved_media(workflow)
 
 
 if __name__ == "__main__":
