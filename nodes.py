@@ -46,9 +46,10 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
     target_dir.mkdir(parents=True, exist_ok=True)
     images = []
     for index, source in enumerate(sources, 1):
-        target = target_dir / f"{index:02d}{source.suffix.lower()}"
+        target = target_dir / f"{index:02d}" / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-        images.append(target.relative_to(project).as_posix())
+        images.append(target.relative_to(project / "images").as_posix())
 
     scenes.append({"id": scene_id, "prompt": prompt, "images": images, "seed": seed, "duration": duration})
     temporary = manifest.with_suffix(".json.tmp")
@@ -140,11 +141,66 @@ class H3SceneImagePath:
     CATEGORY = "MiniMax H3/Scene Batch"
 
     def load(self, path):
+        if not path:
+            return (None,)
         with Image.open(Path(path).expanduser()) as source:
             image = ImageOps.exif_transpose(source).convert("RGB")
             pixels = np.asarray(image, dtype=np.float32) / 255.0
         return (torch.from_numpy(pixels).unsqueeze(0),)
 
 
-NODE_CLASS_MAPPINGS = {"H3SceneCapture": H3SceneCapture, "H3SceneImagePath": H3SceneImagePath}
-NODE_DISPLAY_NAME_MAPPINGS = {"H3SceneCapture": "H3 Scene Capture", "H3SceneImagePath": "H3 Scene Image Path"}
+class H3SceneBatchLoad:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "manifest_path": ("STRING", {"default": ""}),
+            "image_root": ("STRING", {"default": ""}),
+            "start_at": ("INT", {"default": 0, "min": 0}),
+            "auto_queue": ("BOOLEAN", {"default": True}),
+        }}
+
+    RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("STRING",) * 10
+    RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_path_{i}" for i in range(1, 10)) + ("filename_prefix",)
+    FUNCTION = "load"
+    CATEGORY = "MiniMax H3/Scene Batch"
+
+    @classmethod
+    def IS_CHANGED(cls, manifest_path, **kwargs):
+        return os.path.getmtime(manifest_path)
+
+    def load(self, manifest_path, image_root, start_at, auto_queue):
+        scenes = json.loads(Path(manifest_path).expanduser().read_text(encoding="utf-8"))
+        if not scenes:
+            raise ValueError("No saved scenes found.")
+        if start_at >= len(scenes):
+            raise ValueError(f"Scene index {start_at} is beyond the {len(scenes)} saved scenes.")
+        root = Path(image_root).expanduser().resolve()
+        scene = scenes[start_at]
+        images = scene["images"]
+        if not 1 <= len(images) <= 9:
+            raise ValueError(f"{scene['id']}: expected 1 to 9 images.")
+        paths = []
+        for index in range(9):
+            if index < len(images):
+                path = (root / images[index]).resolve()
+                if not path.is_relative_to(root) or not path.is_file():
+                    raise ValueError(f"{scene['id']}: missing image {images[index]}")
+                paths.append(str(path))
+            else:
+                paths.append("")
+        return {
+            "result": (scene["prompt"], scene["seed"], scene["duration"], *paths, f"h3_scenes/{scene['id']}"),
+            "ui": {"start_at": [start_at], "scene_count": [len(scenes)]},
+        }
+
+
+NODE_CLASS_MAPPINGS = {
+    "H3SceneCapture": H3SceneCapture,
+    "H3SceneImagePath": H3SceneImagePath,
+    "H3SceneBatchLoad": H3SceneBatchLoad,
+}
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "H3SceneCapture": "H3 Scene Capture",
+    "H3SceneImagePath": "H3 Scene Image Path",
+    "H3SceneBatchLoad": "H3 Scene Batch Load",
+}
