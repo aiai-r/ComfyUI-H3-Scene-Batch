@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 
+import folder_paths
+
 
 def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
     if not project_dir.strip():
@@ -16,7 +18,14 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration):
         raise ValueError("Enter the finalized H3 prompt.")
     if not re.fullmatch(r"[A-Za-z0-9_-]+", scene_id):
         raise ValueError("Scene ID must contain only letters, numbers, _ or -.")
-    sources = [Path(line.strip().strip('"')).expanduser().resolve() for line in image_paths.splitlines() if line.strip()]
+    sources = []
+    for line in image_paths.splitlines():
+        if not line.strip():
+            continue
+        source = Path(line.strip().strip('"')).expanduser()
+        if not source.is_absolute():
+            source = Path(folder_paths.get_input_directory()) / source
+        sources.append(source.resolve())
     if not 1 <= len(sources) <= 9:
         raise ValueError("Enter 1 to 9 image paths, one per line.")
     for source in sources:
