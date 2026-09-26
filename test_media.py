@@ -1,3 +1,5 @@
+import asyncio
+import copy
 import importlib.util
 import json
 import shutil
@@ -7,6 +9,7 @@ import types
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import av
 import numpy as np
@@ -128,6 +131,51 @@ class SceneMediaTests(unittest.TestCase):
         nodes.save_scene(str(self.root / "old"), "scene01", "Landscape", "", 1, 2)
         result = nodes.H3SceneBatchLoad().load(str(self.root / "old/scenes.json"), str(self.root / "old/images"), 0, False)
         self.assertEqual(result["result"][13:], (None,) * 9)
+
+    def test_duplicate_confirmation_before_writing(self):
+        project = self.root / "duplicates"
+        scene = {"prompt_id": "run1", "prompt": "Landscape", "seed": 7, "duration": 2,
+                 "image_paths": [str(self.audio)], "media": {"nodes": {}, "outputs": {}}}
+        instance = nodes.PromptServer.instance
+        with patch.object(instance, "prompt_queue", create=True), patch.object(nodes, "latest_scene", return_value=scene):
+            def save(**fields):
+                request = types.SimpleNamespace(json=AsyncMock(return_value={"project_dir": str(project), **fields}))
+                return asyncio.run(nodes.save_latest(request))
+
+            self.assertEqual(save().status, 200)
+            before = (project / "scenes.json").read_bytes()
+            files = sorted(project.rglob("*"))
+            duplicate = json.loads(save().text)
+            self.assertEqual(duplicate["duplicates"], ["scene01"])
+            self.assertEqual((project / "scenes.json").read_bytes(), before)
+            self.assertEqual(sorted(project.rglob("*")), files)
+            scene["seed"] = 8
+            self.assertEqual(save(confirm_fingerprint=duplicate["fingerprint"]).status, 400)
+            self.assertEqual((project / "scenes.json").read_bytes(), before)
+            scene["seed"] = 7
+            self.assertEqual(json.loads(save(confirm_fingerprint=duplicate["fingerprint"]).text)["scene_id"], "scene02")
+            self.assertEqual(json.loads(save().text)["duplicates"], ["scene01", "scene02"])
+
+    def test_duplicate_content_order_and_media_settings(self):
+        project = self.root / "compare"
+        snapshot = media.capture_media(self.graph(), {"ref_audios.ref_audio_0": ["t", 0]})
+        scene = {"prompt": "Landscape", "seed": 7, "duration": 2,
+                 "image_paths": [str(self.audio), str(self.video)], "media": snapshot}
+        nodes.save_scene(str(project), "scene01", scene["prompt"], "\n".join(scene["image_paths"]), 7, 2, snapshot)
+        renamed = self.root / "renamed.wav"
+        shutil.copy2(self.audio, renamed)
+        scene["image_paths"][0] = str(renamed)
+        self.assertEqual(nodes.duplicate_scenes(str(project), scene)[1], ["scene01"])
+        for key, value in (("prompt", "Landscape "), ("seed", 8), ("duration", 3),
+                           ("image_paths", list(reversed(scene["image_paths"])))):
+            with self.subTest(key=key):
+                changed = {**scene, key: value}
+                self.assertEqual(nodes.duplicate_scenes(str(project), changed)[1], [])
+        changed = copy.deepcopy(scene)
+        changed["media"]["nodes"]["t"]["inputs"]["duration"] = 0.03
+        self.assertEqual(nodes.duplicate_scenes(str(project), changed)[1], [])
+        renamed.write_bytes(b"changed file content")
+        self.assertEqual(nodes.duplicate_scenes(str(project), scene)[1], [])
 
     def test_capture_uses_completed_history_connections(self):
         graph = self.graph()

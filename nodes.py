@@ -14,6 +14,7 @@ from comfy_api.latest import InputImpl
 from comfy_extras.nodes_audio import load as load_audio
 from server import PromptServer
 from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media
+from .duplicates import duplicate_scenes
 
 
 def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None):
@@ -116,6 +117,12 @@ async def save_latest(request):
         history = PromptServer.instance.prompt_queue.get_history(max_items=20)
         scene = latest_scene(history)
         scene_id = next_scene_id(data["project_dir"])
+        fingerprint, duplicates = duplicate_scenes(data["project_dir"], scene)
+        confirmation = data.get("confirm_fingerprint")
+        if confirmation is not None and confirmation != fingerprint:
+            raise ValueError("確認中にシーンの内容が変わりました。もう一度保存してください。")
+        if duplicates and confirmation != fingerprint:
+            return web.json_response({"duplicates": duplicates, "fingerprint": fingerprint})
         path = save_scene(
             data["project_dir"], scene_id, scene["prompt"],
             "\n".join(scene["image_paths"]), scene["seed"], scene["duration"],
