@@ -64,11 +64,18 @@ const loaded = (prompt, index, overrides = {}) => emit("executed", {
 });
 await new Promise((resolve) => setImmediate(resolve));
 assert.equal(state.count.value, "8");
+for (const display of [state.count, state.progress]) {
+  assert.notEqual(display.disabled, true, "Disabled widgets render an empty value in ComfyUI");
+  assert.equal(display.options.read_only, true);
+  assert.equal(display.mouse(), true);
+}
+assert.match(state.progress.value, /^12\.5%/);
 assert.equal(state.index.type, "hidden");
 assert.equal(state.start.options.serialize, false);
 
 state.start.callback(6);
 assert.equal(state.index.value, 5);
+assert.match(state.progress.value, /^75\.0%/);
 loaded("sixth", 5);
 await tick();
 assert.equal(queued, 0, "Loading must not queue another generation");
@@ -106,7 +113,7 @@ emit("execution_success", { prompt_id: "last" });
 await tick();
 assert.equal(queued, 1);
 assert.equal(state.index.value, 7, "Last scene must not reset to the first");
-assert.match(state.progress.value, /最終シーン完了：8 \/ 8.*今回完了 3 件/);
+assert.match(state.progress.value, /^100\.0%.*最終シーン完了：8 \/ 8.*今回完了 3 件/);
 
 state.start.callback(2);
 loaded("edited", 1);

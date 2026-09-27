@@ -28,7 +28,11 @@ class SceneBatchQueue {
     }, { min: 1, step: 10, precision: 0, serialize: false });
     this.count = node.addWidget("text", "総シーン数", "未取得", () => {}, { serialize: false });
     this.progress = node.addWidget("text", "進捗", "待機", () => {}, { serialize: false });
-    this.count.disabled = this.progress.disabled = true;
+    for (const display of [this.count, this.progress]) {
+      display.options.read_only = true;
+      display.onClick = () => {};
+      display.mouse = () => true;
+    }
     node.addWidget("button", "件数を更新", null, () => this.refresh(), { serialize: false });
     const pathWidget = this.project ?? this.manifest;
     const changed = pathWidget.callback;
@@ -54,7 +58,10 @@ class SceneBatchQueue {
   }
 
   show(text) {
-    this.progress.value = `${text} ／ 今回完了 ${this.completed} 件`;
+    const count = Number(this.count.value);
+    const position = this.pending ? this.pending.index + 1 : this.index.value + 1;
+    const percent = count > 0 ? `${Math.min(100, position / count * 100).toFixed(1)}%` : "—%";
+    this.progress.value = `${percent} ／ ${text} ／ 今回完了 ${this.completed} 件`;
     this.node.setDirtyCanvas(true, true);
   }
 
