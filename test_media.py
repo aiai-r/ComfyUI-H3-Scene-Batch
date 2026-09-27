@@ -266,7 +266,7 @@ class SceneMediaTests(unittest.TestCase):
         self.assertFalse(any(media.is_link(value) for value in loaded["result"]))
         self.assertEqual(loaded["expand"], {})
 
-    def test_invalid_saved_numbers_fail_before_writing_or_expanding(self):
+    def test_linked_seed_uses_fixed_seed_on_load_but_cannot_be_saved(self):
         project = self.root / "invalid"
         for seed, duration in ((["841", 0], 15), (4, ["duration", 0])):
             with self.subTest(seed=seed, duration=duration):
@@ -276,8 +276,13 @@ class SceneMediaTests(unittest.TestCase):
         project.mkdir()
         manifest = project / "scenes.json"
         manifest.write_text(json.dumps([{"id": "scene07", "prompt": "Landscape", "images": [], "seed": ["841", 0], "duration": 15}]))
-        with self.assertRaisesRegex(ValueError, "scene07: Saved seed must be an integer"):
-            nodes.H3SceneBatchLoad().load(str(manifest), str(project / "images"), 0, False)
+        original = manifest.read_bytes()
+        loaded = nodes.H3SceneBatchLoad().load(str(manifest), str(project / "images"), 0, False)
+        self.assertEqual(loaded["result"][:3], ("Landscape", 4, 15))
+        self.assertFalse(any(media.is_link(value) for value in loaded["result"]))
+        self.assertEqual(manifest.read_bytes(), original)
+        manifest.write_text(json.dumps([{"id": "scene08", "prompt": "Landscape", "images": [], "seed": 123, "duration": 15}]))
+        self.assertEqual(nodes.H3SceneBatchLoad().load(str(manifest), str(project / "images"), 0, False)["result"][1], 123)
 
     def test_numeric_capture_rejects_unknown_outputs_and_cycles(self):
         for graph, error in (

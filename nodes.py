@@ -280,8 +280,9 @@ class H3SceneBatchLoad:
             raise ValueError(f"Scene index {start_at} is beyond the {len(scenes)} saved scenes.")
         root = Path(image_root).expanduser().resolve()
         scene = scenes[start_at]
+        seed = 4 if is_link(scene["seed"]) else scene["seed"]
         try:
-            validate_scene_numbers(scene["seed"], scene["duration"])
+            validate_scene_numbers(seed, scene["duration"])
         except ValueError as error:
             raise ValueError(f"{scene['id']}: {error}") from error
         images = scene["images"]
@@ -298,7 +299,7 @@ class H3SceneBatchLoad:
                 paths.append("")
         expanded, media = expand_media(scene.get("media", {}), root)
         return {
-            "result": (scene["prompt"], scene["seed"], scene["duration"], *paths, f"h3_scenes/{scene['id']}", *media),
+            "result": (scene["prompt"], seed, scene["duration"], *paths, f"h3_scenes/{scene['id']}", *media),
             "expand": expanded,
             "ui": {"start_at": [start_at], "scene_count": [len(scenes)], "scene_id": [scene["id"]],
                    "manifest_path": [manifest_path], "image_root": [image_root]},
