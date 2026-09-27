@@ -10,9 +10,12 @@ class SceneBatchQueue {
   constructor(node) {
     this.node = node;
     const widget = (name) => node.widgets.find((item) => item.name === name);
+    this.project = widget("project_dir");
+    this.mode = widget("execution_mode");
     this.index = widget("start_at");
-    this.manifest = widget("manifest_path");
-    this.root = widget("image_root");
+    const project = this.project;
+    this.manifest = project ? { get value() { return project.value ? project.value.replace(/[\\/]+$/, "") + "/scenes.json" : ""; } } : widget("manifest_path");
+    this.root = project ? { get value() { return project.value.replace(/[\\/]+$/, "") + "/images"; } } : widget("image_root");
     this.auto = widget("auto_queue");
     this.index.type = "hidden";
     this.index.computeSize = () => [0, -4];
@@ -27,9 +30,10 @@ class SceneBatchQueue {
     this.progress = node.addWidget("text", "進捗", "待機", () => {}, { serialize: false });
     this.count.disabled = this.progress.disabled = true;
     node.addWidget("button", "件数を更新", null, () => this.refresh(), { serialize: false });
-    const changed = this.manifest.callback;
-    this.manifest.callback = (...args) => {
-      changed?.apply(this.manifest, args);
+    const pathWidget = this.project ?? this.manifest;
+    const changed = pathWidget.callback;
+    pathWidget.callback = (...args) => {
+      changed?.apply(pathWidget, args);
       this.completed = 0;
       clearTimeout(this.timer);
       this.refresh();
@@ -66,7 +70,7 @@ class SceneBatchQueue {
     const path = this.manifest.value;
     if (!path) {
       this.count.value = "未取得";
-      this.show("manifest_path を指定してください");
+      this.show(this.project ? "project_dir を指定してください" : "manifest_path を指定してください");
       return;
     }
     try {
@@ -89,7 +93,8 @@ class SceneBatchQueue {
 
   matches(run) {
     return this.node.graph === app.graph && this.node.mode === 0
-      && this.manifest.value === run.manifest && this.root.value === run.root;
+      && (this.project ? this.mode.value === "バッチ生成" && this.project.value === run.project
+        : this.manifest.value === run.manifest && this.root.value === run.root);
   }
 
   executed(detail) {
@@ -103,6 +108,7 @@ class SceneBatchQueue {
     this.pending = {
       promptId: detail.prompt_id, index, count, scene: message.scene_id?.[0] ?? "",
       manifest: message.manifest_path?.[0], root: message.image_root?.[0],
+      project: message.project_dir?.[0],
     };
     this.count.value = String(count);
     this.show(`実行中：${index + 1} / ${count}（${this.pending.scene}）`);
@@ -150,7 +156,7 @@ class SceneBatchQueue {
 app.registerExtension({
   name: "h3_scene_batch.queue",
   async beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== "H3SceneBatchLoad") return;
+    if (!["H3SceneBatchLoad", "H3SceneCapture"].includes(nodeData.name)) return;
     const created = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       const result = created?.apply(this, arguments);

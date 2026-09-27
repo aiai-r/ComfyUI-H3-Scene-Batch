@@ -2,19 +2,25 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 let extension;
-globalThis.sceneModeTestApp = { registerExtension(value) { extension = value; }, ui: { dialog: { show(message) { throw new Error(message); } } } };
+const notices = [];
+globalThis.sceneModeTestApp = {
+  registerExtension(value) { extension = value; },
+  extensionManager: { toast: { add(value) { notices.push(value); } } },
+};
 const source = readFileSync(new URL("web/mode.js", import.meta.url), "utf8")
   .replace('import { app } from "../../scripts/app.js";', "const app = globalThis.sceneModeTestApp;");
 const { switchSceneMode } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-const workflow = JSON.parse(readFileSync(new URL("../../user/default/workflows/video_minimax_h3_r2v_scene_batch.json", import.meta.url), "utf8"));
-
+const names = ["prompt", "seed", "duration", ...Array.from({ length: 9 }, (_, i) => `image_${i + 1}`), "filename_prefix",
+  ...["ref_audio", "ref_video", "ref_video_audio"].flatMap((name) => [0, 1, 2].map((i) => `${name}_${i}`))];
+const nodeData = { name: "H3SceneCapture", output_name: names, output: names.map(() => "*") };
 class Node {
-  constructor(data, graph) { Object.assign(this, structuredClone(data)); this.graph = graph; this.widgets = []; }
-  addWidget(type, name, value, callback, options) {
-    const widget = { type, name, value, callback, options };
-    this.widgets.push(widget);
-    return widget;
+  constructor(id, type = "test") {
+    this.id = id; this.type = type; this.mode = 0; this.properties = {}; this.size = [500, 300];
+    this.inputs = []; this.outputs = []; this.widgets = [];
   }
+  addOutput(name, type) { this.outputs.push({ name, type, links: [] }); }
+  computeSize() { return [500, 600]; }
+  setSize(size) { this.size = size; }
   disconnectInput(slot) {
     const id = this.inputs[slot].link;
     const link = this.graph.links[id];
@@ -28,80 +34,86 @@ class Node {
   connect(slot, target, input) {
     target.disconnectInput(input);
     const id = ++this.graph.lastLink;
-    this.outputs[slot].links ??= [];
     this.outputs[slot].links.push(id);
     target.inputs[input].link = id;
     this.graph.links[id] = { id, origin_id: this.id, origin_slot: slot, target_id: target.id, target_slot: input };
   }
 }
-
-const graph = {
-  links: Object.fromEntries(workflow.links.map(([id, origin_id, origin_slot, target_id, target_slot]) => [id, { id, origin_id, origin_slot, target_id, target_slot }])),
-  lastLink: workflow.last_link_id,
-  getNodeById(id) { return this.nodes.find((node) => node.id === id); },
-  beforeChange() {}, afterChange() {}, setDirtyCanvas() {},
-};
-graph.nodes = workflow.nodes.map((node) => new Node(node, graph));
-const get = (id) => graph.getNodeById(id);
-const control = get(830);
-const inputSource = (id, name) => {
-  const input = get(id).inputs.find((item) => item.name === name);
-  const link = graph.links[input.link];
-  return link ? [link.origin_id, link.origin_slot] : null;
-};
-const helpers = [825, 826, 827, 828].map((id) => [id, get(id).mode]);
-const optional = [602, 603, 604, 605, 606, 607, 608, 802].map((id) => [id, get(id).mode]);
-const settings = graph.nodes.map((node) => JSON.stringify([node.id, node.widgets_values, node.widgets_values_named]));
-function checkLinks() {
-  for (const link of Object.values(graph.links)) {
-    assert.equal(get(link.target_id).inputs[link.target_slot].link, link.id);
-    assert.ok(get(link.origin_id).outputs[link.origin_slot].links.includes(link.id));
+await extension.beforeRegisterNodeDef(Node, nodeData);
+function fixture() {
+  const graph = {
+    nodes: [], links: {}, lastLink: 0,
+    getNodeById(id) { return this.nodes.find((node) => node.id === id); },
+    beforeChange() {}, afterChange() {}, setDirtyCanvas() {},
+  };
+  function add(id, type, inputs = [], outputs = 1) {
+    const n = new Node(id, type); n.graph = graph;
+    n.inputs = inputs.map((name) => ({ name, link: null }));
+    for (let i = 0; i < outputs; i++) n.addOutput(`out${i}`, "*");
+    graph.nodes.push(n); return n;
   }
-  for (const [id, mode] of helpers) assert.equal(get(id).mode, mode);
-  assert.deepEqual(graph.nodes.map((node) => JSON.stringify([node.id, node.widgets_values, node.widgets_values_named])), settings);
+  const inputs = ["prompt", "noise_seed", "value_1", ...Array.from({ length: 9 }, (_, i) => `ref_images.ref_image_${i}`),
+    ...["ref_audios.ref_audio", "ref_videos.ref_video", "ref_video_audios.ref_video_audio"].flatMap((name) => [0, 1, 2].map((i) => `${name}_${i}`))];
+  const generator = add(817, "generator", inputs);
+  const save = add(92, "SaveVideo", ["filename_prefix"]);
+  const llm = add(822, "LLM", [], 2);
+  llm.connect(1, generator, 0);
+  add(841, "ttN seed").connect(0, generator, 1);
+  for (let i = 0; i < 9; i++) add(600 + i, "LoadImage").connect(0, generator, 3 + i);
+  add(802, "LoadAudio").connect(0, generator, 12);
+  add(224, "PreviewAny"); add(805, "preview");
+  const unrelated = add(825, "FolderBatch"); unrelated.mode = 4;
+  const control = add(830, "H3SceneCapture", [], 0);
+  control.widgets = [
+    { name: "project_dir", value: "project" }, { name: "execution_mode", value: "シーン作成" },
+    { name: "start_at", value: 0 }, { name: "auto_queue", value: true },
+  ];
+  control.onNodeCreated(); control.onConfigure();
+  return { graph, add, generator, save, control };
 }
-
-await extension.beforeRegisterNodeDef(Node, { name: "H3SceneCapture" });
-control.onConfigure();
-assert.equal(control.widgets[0].value, "バッチ生成");
-control.widgets[0].callback("シーン作成");
-assert.equal(control.properties.scene_batch.mode, "scene");
-assert.deepEqual(inputSource(817, "prompt"), [822, 1]);
-assert.deepEqual(inputSource(817, "ref_audios.ref_audio_0"), [802, 0]);
-assert.equal(inputSource(817, "ref_video_audios.ref_video_audio_0"), null);
-assert.equal(inputSource(817, "noise_seed"), null);
-assert.equal(inputSource(817, "value_1"), null);
-assert.equal(inputSource(92, "filename_prefix"), null);
-for (let i = 0; i < 9; i++) assert.deepEqual(inputSource(817, `ref_images.ref_image_${i}`), [600 + i, 0]);
-for (const id of [822, 224, 805]) assert.equal(get(id).mode, 0);
-for (let id = 831; id <= 840; id++) assert.equal(get(id).mode, 4);
-for (const [id, mode] of optional) assert.equal(get(id).mode, mode);
-checkLinks();
-
-// A user edits a reference connection and enables audio in scene mode.
-get(802).mode = 0;
-const audioSlot = get(817).inputs.findIndex((input) => input.name === "ref_audios.ref_audio_1");
-get(802).connect(0, get(817), audioSlot);
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+const f = fixture();
+await tick();
+assert.equal(f.control.outputs.length, 22, "Old capture nodes gain the registered outputs");
+const original = Object.values(f.graph.links).map((l) => [l.origin_id, l.origin_slot, l.target_id, l.target_slot]);
+const count = f.graph.nodes.length;
 for (let repeat = 0; repeat < 3; repeat++) {
-  switchSceneMode(control, "batch");
-  assert.deepEqual(inputSource(817, "prompt"), [831, 0]);
-  assert.deepEqual(inputSource(817, "ref_audios.ref_audio_1"), [831, 14]);
-  assert.deepEqual(inputSource(817, "noise_seed"), [831, 1]);
-  assert.deepEqual(inputSource(92, "filename_prefix"), [831, 12]);
-  for (const id of [822, 224, 805]) assert.equal(get(id).mode, 4);
-  for (let id = 831; id <= 840; id++) assert.equal(get(id).mode, 0);
-  checkLinks();
-  // Persisted properties survive JSON save/reload.
-  control.properties = JSON.parse(JSON.stringify(control.properties));
-  switchSceneMode(control, "scene");
-  assert.deepEqual(inputSource(817, "ref_audios.ref_audio_1"), [802, 0]);
-  assert.equal(get(802).mode, 0);
-  checkLinks();
+  switchSceneMode(f.control, "batch");
+  assert.equal(f.graph.nodes.length, count, "Switching must never create helper nodes");
+  for (const input of f.generator.inputs) assert.equal(f.graph.links[input.link].origin_id, 830);
+  assert.equal(f.graph.links[f.save.inputs[0].link].origin_id, 830);
+  assert.equal(f.control.widgets[1].value, "バッチ生成");
+  assert.equal(f.graph.getNodeById(822).mode, 4);
+  switchSceneMode(f.control, "scene");
+  assert.deepEqual(Object.values(f.graph.links).map((l) => [l.origin_id, l.origin_slot, l.target_id, l.target_slot]), original);
+  assert.equal(f.graph.getNodeById(822).mode, 0);
+  assert.equal(f.graph.getNodeById(825).mode, 4);
 }
-control.onConfigure();
-assert.equal(control.widgets.length, 1);
-assert.equal(control.widgets[0].value, "シーン作成");
-const originalCapture = new Node({ id: 1, properties: {} }, graph);
-originalCapture.onConfigure();
-assert.equal(originalCapture.widgets.length, 0);
-console.log("PASS: scene/batch routes, repeated toggles, saved properties, optional media states, untouched settings/helpers and widget reload");
+const audioSlot = f.generator.inputs.findIndex((item) => item.name === "ref_audios.ref_audio_1");
+f.graph.getNodeById(802).connect(0, f.generator, audioSlot);
+switchSceneMode(f.control, "batch");
+f.control.properties = structuredClone(f.control.properties);
+switchSceneMode(f.control, "scene");
+assert.equal(f.graph.links[f.generator.inputs[audioSlot].link].origin_id, 802);
+f.control.h3BatchQueue = { pending: { promptId: "running" } };
+f.control.widgets[1].callback("バッチ生成");
+assert.equal(notices.length, 1);
+assert.equal(f.control.widgets[1].value, "シーン作成");
+
+const migrated = fixture();
+await tick();
+switchSceneMode(migrated.control, "batch");
+const loader = migrated.add(831, "H3SceneBatchLoad", [], 22);
+loader.widgets = [{ name: "start_at", value: 5 }, { name: "auto_queue", value: false }];
+for (const route of migrated.control.properties.scene_batch.routes) route.batch[0] = "831";
+migrated.control.properties.scene_batch.node_modes.batch = { "831": 0 };
+delete migrated.control.properties.h3_unified_controls;
+migrated.control.outputs = [];
+migrated.control.onConfigure();
+await tick();
+assert.equal(migrated.control.widgets[2].value, 5);
+assert.equal(migrated.control.widgets[3].value, false);
+assert.equal(loader.mode, 4);
+assert.equal(migrated.control.outputs.length, 22);
+for (const input of migrated.generator.inputs) assert.equal(migrated.graph.links[input.link].origin_id, 830);
+console.log("PASS: one capture node switches and routes batch outputs, restores edited scene links, keeps helpers unchanged, and upgrades old controls without adding nodes.");

@@ -157,3 +157,50 @@ restored.onConfigure();
 assert.equal(restored.h3BatchQueue.start.value, 6, "Saved zero-based index restores as one-based selection");
 restored.onRemoved();
 console.log("Batch count, progress, sixth-scene resume, failure, success, final scene, edits, mode, disconnect, and cleanup tests passed.");
+
+class CaptureNode {
+  id = 830;
+  mode = 0;
+  graph = app.graph;
+  size = [500, 300];
+  widgets = [
+    { name: "project_dir", value: "project" },
+    { name: "execution_mode", value: "バッチ生成" },
+    { name: "start_at", value: 0 },
+    { name: "auto_queue", value: true },
+  ];
+  addWidget(...args) { return Node.prototype.addWidget.apply(this, args); }
+  setDirtyCanvas() {}
+  computeSize() { return [500, 500]; }
+  setSize(size) { this.size = size; }
+}
+await extension.beforeRegisterNodeDef(CaptureNode, { name: "H3SceneCapture" });
+const capture = new CaptureNode();
+capture.onNodeCreated();
+await new Promise((resolve) => setImmediate(resolve));
+const unified = capture.h3BatchQueue;
+assert.equal(unified.count.value, "8");
+unified.start.callback(6);
+const captureLoaded = (prompt) => emit("executed", {
+  node: "830", display_node: "830", prompt_id: prompt,
+  output: { start_at: [5], scene_count: [8], scene_id: ["scene06"], project_dir: ["project"],
+    manifest_path: ["project\\scenes.json"], image_root: ["project\\images"] },
+});
+captureLoaded("capture-interrupted");
+emit("execution_interrupted", { prompt_id: "capture-interrupted" });
+assert.equal(unified.start.value, 6);
+assert.match(unified.progress.value, /停止：6 \/ 8/);
+captureLoaded("capture-success");
+emit("execution_success", { prompt_id: "capture-success" });
+await tick();
+assert.equal(unified.start.value, 7);
+assert.equal(queued, 2);
+unified.start.callback(6);
+captureLoaded("capture-scene-mode");
+unified.mode.value = "シーン作成";
+emit("execution_success", { prompt_id: "capture-scene-mode" });
+await tick();
+assert.equal(queued, 2);
+assert.equal(unified.start.value, 6);
+capture.onRemoved();
+console.log("Unified Capture panel: folder count, sixth-scene selection, progress, retry and success-only advance passed.");

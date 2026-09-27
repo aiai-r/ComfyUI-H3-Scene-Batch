@@ -152,6 +152,25 @@ class SceneMediaTests(unittest.TestCase):
         self.assertEqual(result["ui"]["manifest_path"], [manifest])
         self.assertEqual(result["ui"]["image_root"], [str(project / "images")])
 
+    def test_capture_runs_sixth_scene_from_project_directory(self):
+        project = self.root / "capture_batch"
+        snapshot = media.capture_media(self.graph(), {"ref_audios.ref_audio_0": ["a", 0]})
+        for index in range(8):
+            image = self.root / f"image{index + 1}.png"
+            nodes.Image.new("RGB", (8, 8), (index + 1, 0, 0)).save(image)
+            nodes.save_scene(str(project), f"scene{index + 1:02d}", f"Prompt {index + 1}", str(image), index + 10, index + 1, snapshot)
+        capture = nodes.H3SceneCapture()
+        output = capture.noop(str(project), "バッチ生成", 5, True)
+        self.assertEqual(output["result"][:3], ("Prompt 6", 15, 6))
+        self.assertEqual(tuple(output["result"][3].shape), (1, 8, 8, 3))
+        self.assertAlmostEqual(output["result"][3][0, 0, 0, 0].item(), 6 / 255)
+        self.assertIsNone(output["result"][4])
+        self.assertEqual(output["ui"]["scene_id"], ["scene06"])
+        self.assertEqual(output["ui"]["project_dir"], [str(project)])
+        audio = self.evaluate(output["expand"], output["result"][13], {})
+        self.assertEqual(audio["sample_rate"], 24000)
+        self.assertEqual(capture.noop("missing", "シーン作成"), (None,) * 22)
+
     def test_batch_count_empty_invalid_and_missing(self):
         manifest = self.root / "scenes.json"
         request = types.SimpleNamespace(json=AsyncMock(return_value={"manifest_path": str(manifest)}))
