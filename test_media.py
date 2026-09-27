@@ -132,6 +132,38 @@ class SceneMediaTests(unittest.TestCase):
         result = nodes.H3SceneBatchLoad().load(str(self.root / "old/scenes.json"), str(self.root / "old/images"), 0, False)
         self.assertEqual(result["result"][13:], (None,) * 9)
 
+    def test_batch_count_and_sixth_scene_resume(self):
+        project = self.root / "batch"
+        for index in range(8):
+            source = self.root / f"reference{index + 1}.png"
+            source.write_bytes(f"image-{index + 1}".encode())
+            nodes.save_scene(str(project), f"scene{index + 1:02d}", f"Prompt {index + 1}", str(source), index + 10, index + 1)
+        manifest = str(project / "scenes.json")
+        request = types.SimpleNamespace(json=AsyncMock(return_value={"manifest_path": manifest}))
+        response = asyncio.run(nodes.manifest_info(request))
+        self.assertEqual(response.status, 200)
+        self.assertEqual(json.loads(response.text), {"scene_count": 8})
+        result = nodes.H3SceneBatchLoad().load(manifest, str(project / "images"), 5, True)
+        self.assertEqual(result["result"][:3], ("Prompt 6", 15, 6))
+        self.assertEqual(Path(result["result"][3]).read_bytes(), b"image-6")
+        self.assertEqual(result["ui"]["start_at"], [5])
+        self.assertEqual(result["ui"]["scene_count"], [8])
+        self.assertEqual(result["ui"]["scene_id"], ["scene06"])
+        self.assertEqual(result["ui"]["manifest_path"], [manifest])
+        self.assertEqual(result["ui"]["image_root"], [str(project / "images")])
+
+    def test_batch_count_empty_invalid_and_missing(self):
+        manifest = self.root / "scenes.json"
+        request = types.SimpleNamespace(json=AsyncMock(return_value={"manifest_path": str(manifest)}))
+        self.assertEqual(asyncio.run(nodes.manifest_info(request)).status, 400)
+        for content, status in (("[]", 200), ("{}", 400), ("invalid", 400)):
+            with self.subTest(content=content):
+                manifest.write_text(content, encoding="utf-8")
+                response = asyncio.run(nodes.manifest_info(request))
+                self.assertEqual(response.status, status)
+                if status == 200:
+                    self.assertEqual(json.loads(response.text), {"scene_count": 0})
+
     def test_duplicate_confirmation_before_writing(self):
         project = self.root / "duplicates"
         scene = {"prompt_id": "run1", "prompt": "Landscape", "seed": 7, "duration": 2,

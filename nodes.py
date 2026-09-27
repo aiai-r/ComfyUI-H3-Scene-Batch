@@ -151,6 +151,18 @@ async def open_folder(request):
     return web.json_response({"path": str(project)})
 
 
+@PromptServer.instance.routes.post("/h3_scene_batch/manifest_info")
+async def manifest_info(request):
+    data = await request.json()
+    try:
+        scenes = json.loads(Path(data["manifest_path"]).expanduser().read_text(encoding="utf-8"))
+        if not isinstance(scenes, list):
+            raise ValueError("scenes.json must contain a list.")
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=400)
+    return web.json_response({"scene_count": len(scenes)})
+
+
 class H3SceneCapture:
     @classmethod
     def INPUT_TYPES(cls):
@@ -254,7 +266,8 @@ class H3SceneBatchLoad:
         return {
             "result": (scene["prompt"], scene["seed"], scene["duration"], *paths, f"h3_scenes/{scene['id']}", *media),
             "expand": expanded,
-            "ui": {"start_at": [start_at], "scene_count": [len(scenes)]},
+            "ui": {"start_at": [start_at], "scene_count": [len(scenes)], "scene_id": [scene["id"]],
+                   "manifest_path": [manifest_path], "image_root": [image_root]},
         }
 
 
