@@ -13,11 +13,34 @@ import folder_paths
 from comfy_api.latest import InputImpl
 from comfy_extras.nodes_audio import load as load_audio
 from server import PromptServer
-from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media
+from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media, is_link
 from .duplicates import duplicate_scenes
 
 
+def validate_scene_numbers(seed, duration):
+    if type(seed) is not int:
+        raise ValueError("Saved seed must be an integer, not a node link. Restore the actual seed in scenes.json.")
+    if type(duration) not in (int, float):
+        raise ValueError("Saved duration must be a number, not a node link. Restore the actual duration in scenes.json.")
+
+
+def resolve_number(graph, value):
+    visited = set()
+    while is_link(value):
+        node_id, slot = value
+        if node_id in visited:
+            raise ValueError(f"Cyclic numeric input at node {node_id}.")
+        visited.add(node_id)
+        node = graph[node_id]
+        field = {"ttN seed": "seed", "PrimitiveInt": "value", "PrimitiveFloat": "value"}.get(node["class_type"])
+        if field is None or slot != 0:
+            raise ValueError(f"Cannot capture numeric output from {node['class_type']} ({node_id}); use a literal value or a supported numeric node.")
+        value = node["inputs"][field]
+    return value
+
+
 def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None):
+    validate_scene_numbers(seed, duration)
     if not project_dir.strip():
         raise ValueError("Set a project directory.")
     if not prompt.strip():
@@ -99,12 +122,15 @@ def latest_scene(history):
                 image_paths.append(source["inputs"]["path"])
             else:
                 raise ValueError(f"Unsupported reference image source: {source['class_type']}")
+        seed = resolve_number(graph, graph["817:129"]["inputs"]["noise_seed"])
+        duration = resolve_number(graph, graph["817:819"]["inputs"]["value"])
+        validate_scene_numbers(seed, duration)
         return {
             "prompt_id": prompt_id,
             "prompt": output[0],
             "image_paths": image_paths,
-            "seed": graph["817:129"]["inputs"]["noise_seed"],
-            "duration": graph["817:819"]["inputs"]["value"],
+            "seed": seed,
+            "duration": duration,
             "media": capture_media(graph, references),
         }
     raise ValueError("No completed run of this H3 workflow was found in recent history.")
@@ -250,6 +276,10 @@ class H3SceneBatchLoad:
             raise ValueError(f"Scene index {start_at} is beyond the {len(scenes)} saved scenes.")
         root = Path(image_root).expanduser().resolve()
         scene = scenes[start_at]
+        try:
+            validate_scene_numbers(scene["seed"], scene["duration"])
+        except ValueError as error:
+            raise ValueError(f"{scene['id']}: {error}") from error
         images = scene["images"]
         if len(images) > 9:
             raise ValueError(f"{scene['id']}: expected up to 9 images.")

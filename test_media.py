@@ -224,6 +224,50 @@ class SceneMediaTests(unittest.TestCase):
         self.assertEqual(set(scene["media"]["nodes"]), {"t", "a"})
         self.assertEqual(scene["image_paths"], [])
 
+    def test_capture_resolves_linked_seed_and_duration_before_saving(self):
+        graph = {
+            "817:136": {"inputs": {"prompt": ["prompt", 0]}},
+            "224": {"inputs": {"source": ["prompt", 0]}},
+            "817:129": {"inputs": {"noise_seed": ["841", 0]}},
+            "841": {"class_type": "ttN seed", "inputs": {"seed": ["number", 0]}},
+            "number": {"class_type": "PrimitiveInt", "inputs": {"value": 123456789012345}},
+            "817:819": {"inputs": {"value": ["duration", 0]}},
+            "duration": {"class_type": "PrimitiveFloat", "inputs": {"value": 15.0}},
+        }
+        entry = {"prompt": [0, "run1", graph], "status": {"status_str": "success"}, "outputs": {"224": {"text": ["Landscape"]}}}
+        scene = nodes.latest_scene({"run1": entry})
+        self.assertEqual(scene["seed"], 123456789012345)
+        self.assertEqual(scene["duration"], 15.0)
+        project = self.root / "linked"
+        path = nodes.save_scene(str(project), "scene01", scene["prompt"], "", scene["seed"], scene["duration"], scene["media"])
+        loaded = nodes.H3SceneBatchLoad().load(path, str(project / "images"), 0, False)
+        self.assertEqual(loaded["result"][1], scene["seed"])
+        self.assertFalse(any(media.is_link(value) for value in loaded["result"]))
+        self.assertEqual(loaded["expand"], {})
+
+    def test_invalid_saved_numbers_fail_before_writing_or_expanding(self):
+        project = self.root / "invalid"
+        for seed, duration in ((["841", 0], 15), (4, ["duration", 0])):
+            with self.subTest(seed=seed, duration=duration):
+                with self.assertRaisesRegex(ValueError, "not a node link"):
+                    nodes.save_scene(str(project), "scene01", "Landscape", "", seed, duration)
+                self.assertFalse(project.exists())
+        project.mkdir()
+        manifest = project / "scenes.json"
+        manifest.write_text(json.dumps([{"id": "scene07", "prompt": "Landscape", "images": [], "seed": ["841", 0], "duration": 15}]))
+        with self.assertRaisesRegex(ValueError, "scene07: Saved seed must be an integer"):
+            nodes.H3SceneBatchLoad().load(str(manifest), str(project / "images"), 0, False)
+
+    def test_numeric_capture_rejects_unknown_outputs_and_cycles(self):
+        for graph, error in (
+            ({"n": {"class_type": "RandomInteger", "inputs": {"seed": 17}}}, "Cannot capture"),
+            ({"n": {"class_type": "ttN seed", "inputs": {"seed": ["n", 0]}}}, "Cyclic"),
+        ):
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                nodes.resolve_number(graph, ["n", 0])
+        with self.assertRaisesRegex(ValueError, "Cannot capture"):
+            nodes.resolve_number({"n": {"class_type": "PrimitiveInt", "inputs": {"value": 17}}}, ["n", 1])
+
     def test_vhs_settings_and_shared_source(self):
         graph = {"v": {"class_type": "VHS_LoadVideo", "inputs": {"video": self.video.name, "force_rate": 24, "skip_first_frames": 2, "frame_load_cap": 5, "select_every_nth": 1}}}
         refs = {"ref_videos.ref_video_0": ["v", 0], "ref_video_audios.ref_video_audio_0": ["v", 2]}
