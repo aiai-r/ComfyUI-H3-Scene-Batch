@@ -92,9 +92,10 @@ class SceneBatchQueue {
   }
 
   matches(run) {
+    const path = (value) => value?.replaceAll("\\", "/").replace(/\/+$/, "");
     return this.node.graph === app.graph && this.node.mode === 0
-      && (this.project ? this.mode.value === "バッチ生成" && this.project.value === run.project
-        : this.manifest.value === run.manifest && this.root.value === run.root);
+      && (!this.project || this.mode.value === "バッチ生成")
+      && path(this.manifest.value) === path(run.manifest) && path(this.root.value) === path(run.root);
   }
 
   executed(detail) {
@@ -108,7 +109,6 @@ class SceneBatchQueue {
     this.pending = {
       promptId: detail.prompt_id, index, count, scene: message.scene_id?.[0] ?? "",
       manifest: message.manifest_path?.[0], root: message.image_root?.[0],
-      project: message.project_dir?.[0],
     };
     this.count.value = String(count);
     this.show(`実行中：${index + 1} / ${count}（${this.pending.scene}）`);

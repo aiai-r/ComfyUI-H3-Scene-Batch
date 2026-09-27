@@ -200,28 +200,12 @@ class H3SceneCapture:
             "auto_queue": ("BOOLEAN", {"default": True}),
         }}
 
-    RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("IMAGE",) * 9 + ("STRING",) + tuple(kind for _, kind in MEDIA_INPUTS)
-    RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_{i}" for i in range(1, 10)) + ("filename_prefix",) + tuple(name.split(".")[1] for name, _ in MEDIA_INPUTS)
+    RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "MiniMax H3/Scene Batch"
 
-    @classmethod
-    def IS_CHANGED(cls, project_dir, execution_mode="シーン作成", **kwargs):
-        if execution_mode == "バッチ生成":
-            return os.path.getmtime(Path(project_dir).expanduser() / "scenes.json")
-        return False
-
     def noop(self, project_dir, execution_mode="シーン作成", start_at=0, auto_queue=True):
-        if execution_mode != "バッチ生成":
-            return (None,) * len(self.RETURN_TYPES)
-        project = Path(project_dir).expanduser()
-        output = H3SceneBatchLoad().load(str(project / "scenes.json"), str(project / "images"), start_at, auto_queue)
-        values = list(output["result"])
-        for slot in range(3, 12):
-            values[slot] = H3SceneImagePath().load(values[slot])[0]
-        output["result"] = tuple(values)
-        output["ui"]["project_dir"] = [project_dir]
-        return output
+        return ()
 
 
 class H3SceneImagePath:
