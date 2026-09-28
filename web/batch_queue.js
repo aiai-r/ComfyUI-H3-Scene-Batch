@@ -6,6 +6,7 @@ class SceneBatchQueue {
   completed = 0;
   timer = null;
   refreshId = 0;
+  hiddenWidgets = new Map();
 
   constructor(node) {
     this.node = node;
@@ -33,7 +34,7 @@ class SceneBatchQueue {
       display.onClick = () => {};
       display.mouse = () => true;
     }
-    node.addWidget("button", "件数を更新", null, () => this.refresh(), { serialize: false });
+    this.refreshButton = node.addWidget("button", "件数を更新", null, () => this.refresh(), { serialize: false });
     const pathWidget = this.project ?? this.manifest;
     const changed = pathWidget.callback;
     pathWidget.callback = (...args) => {
@@ -49,6 +50,7 @@ class SceneBatchQueue {
         clearTimeout(this.timer);
         this.pending = null;
         this.completed = 0;
+        this.updateVisibility();
         this.refresh();
       };
     }
@@ -82,9 +84,30 @@ class SceneBatchQueue {
 
   configure() {
     this.start.value = this.index.value + 1;
+    this.updateVisibility();
     const size = this.node.computeSize();
     this.node.setSize([Math.max(this.node.size[0], size[0]), Math.max(this.node.size[1], size[1])]);
     this.refresh();
+  }
+
+  updateVisibility() {
+    if (!this.mode) return;
+    const batch = this.mode.value === "バッチ生成";
+    const batchWidgets = [this.auto, this.start, this.count, this.progress, this.refreshButton];
+    for (const item of this.node.widgets) {
+      const hidden = batchWidgets.includes(item) ? !batch : item.h3SceneOnly ? batch : false;
+      if (hidden && !this.hiddenWidgets.has(item)) {
+        this.hiddenWidgets.set(item, { type: item.type, computeSize: item.computeSize });
+        item.type = "hidden";
+        item.computeSize = () => [0, -4];
+      } else if (!hidden && this.hiddenWidgets.has(item)) {
+        Object.assign(item, this.hiddenWidgets.get(item));
+        this.hiddenWidgets.delete(item);
+      }
+    }
+    const size = this.node.computeSize();
+    this.node.setSize([Math.max(this.node.size[0], size[0]), size[1]]);
+    this.node.setDirtyCanvas(true, true);
   }
 
   async refresh() {

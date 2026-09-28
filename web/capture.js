@@ -73,6 +73,7 @@ app.registerExtension({
           this.setDirtyCanvas(true, true);
         }
       }, { serialize: false });
+      save.h3SceneOnly = true;
       this.addWidget("button", "保存先フォルダを開く", null, async () => {
         try {
           await request("open_folder");

@@ -98,6 +98,7 @@ export function configureGeneration(control, app) {
     const mode = config.mode;
     const count = mode === "R2V" ? 9 : mode === "FL2V" ? 2 : 1;
     const batch = widget(control, "execution_mode").value === "バッチ生成";
+    control.h3BatchQueue?.updateVisibility();
     for (let i = 0; i < 9; i++) {
       const node = graph.getNodeById(600 + i);
       if (node) node.h3Hidden = batch || i >= count;
@@ -138,6 +139,7 @@ export function configureGeneration(control, app) {
   };
   if (!modeWidget) {
     modeWidget = control.addWidget("combo", "生成モード", config.mode, change, { values: MODES, serialize: false });
+    modeWidget.h3SceneOnly = true;
     const execution = widget(control, "execution_mode");
     const callback = execution.callback;
     execution.callback = function () { callback?.apply(this, arguments); refresh(); };
