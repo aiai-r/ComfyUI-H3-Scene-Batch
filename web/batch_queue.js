@@ -42,6 +42,16 @@ class SceneBatchQueue {
       clearTimeout(this.timer);
       this.refresh();
     };
+    if (this.mode) {
+      const changedMode = this.mode.callback;
+      this.mode.callback = (...args) => {
+        changedMode?.apply(this.mode, args);
+        clearTimeout(this.timer);
+        this.pending = null;
+        this.completed = 0;
+        this.refresh();
+      };
+    }
     this.listeners = {
       executed: ({ detail }) => this.executed(detail),
       execution_success: ({ detail }) => this.finish(detail, true),
@@ -58,6 +68,11 @@ class SceneBatchQueue {
   }
 
   show(text) {
+    if (this.mode && this.mode.value !== "バッチ生成") {
+      this.progress.value = "シーン作成";
+      this.node.setDirtyCanvas(true, true);
+      return;
+    }
     const count = Number(this.count.value);
     const position = this.pending ? this.pending.index + 1 : this.index.value + 1;
     const percent = count > 0 ? `${Math.min(100, position / count * 100).toFixed(1)}%` : "—%";
@@ -74,6 +89,11 @@ class SceneBatchQueue {
 
   async refresh() {
     const id = ++this.refreshId;
+    if (this.node.mode !== 0 || (this.mode && this.mode.value !== "バッチ生成")) {
+      this.count.value = "—";
+      this.show("待機");
+      return;
+    }
     const path = this.manifest.value;
     if (!path) {
       this.count.value = "未取得";
@@ -87,12 +107,12 @@ class SceneBatchQueue {
         body: JSON.stringify({ manifest_path: path }),
       });
       const data = await response.json();
-      if (id !== this.refreshId || path !== this.manifest.value) return;
+      if (id !== this.refreshId || path !== this.manifest.value || this.node.mode !== 0 || (this.mode && this.mode.value !== "バッチ生成")) return;
       if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
       this.count.value = String(data.scene_count);
       if (!this.pending) this.show(`待機：${this.index.value + 1} / ${data.scene_count}`);
     } catch (error) {
-      if (id !== this.refreshId || path !== this.manifest.value) return;
+      if (id !== this.refreshId || path !== this.manifest.value || this.node.mode !== 0 || (this.mode && this.mode.value !== "バッチ生成")) return;
       this.count.value = "未取得";
       this.show(`件数取得失敗：${error.message}`);
     }
