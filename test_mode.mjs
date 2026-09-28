@@ -60,10 +60,18 @@ await assert.rejects(app.graphToPrompt(), /1つ/);
 app.graph._nodes.pop();
 
 class Node {
+  id = 830;
+  type = "H3SceneCapture";
+  mode = 0;
   widgets = capture().widgets;
   properties = {};
   outputs = [];
   size = [500, 700];
+  addWidget(type, name, value, callback, options) {
+    const entry = { type, name, value, callback, options };
+    this.widgets.push(entry);
+    return entry;
+  }
   computeSize() { return [500, 300]; }
   setSize(size) { this.size = size; }
   setDirtyCanvas() {}
@@ -85,14 +93,16 @@ let restored = null;
 const llm = { outputs: [{}, {}], mode: 4, connect(slot, target, input) { restored = [slot, target, input]; } };
 const target = { inputs: [{ name: "prompt" }], disconnectInput() {} };
 const loader = { mode: 0 };
-old.graph = { getNodeById(id) { return { "817": target, "822": llm, "831": loader }[id]; } };
+old.graph = { getNodeById(id) { return { "817": target, "822": llm, "831": loader }[id]; }, setDirtyCanvas() {} };
 old.onNodeCreated(); old.onConfigure();
 await new Promise((resolve) => setImmediate(resolve));
 assert.equal(old.outputs.length, 0, "The previous 22 visible outputs are removed");
 assert.deepEqual(restored, [1, target, 0]);
 assert.equal(llm.mode, 0);
 assert.equal(loader.mode, 4);
-assert.deepEqual(old.properties, {});
+assert.equal(old.properties.scene_batch, undefined);
+assert.equal(old.properties.h3_unified_controls, undefined);
+assert.equal(old.properties.h3_multimode.mode, "R2V");
 console.log("PASS: output-free Capture, internal batch prompt, sixth scene, unchanged visible workflow/model settings, scene mode, and previous 22-output cleanup.");
 
 const { scenePrompt, configureGeneration } = await import(generationUrl);
@@ -202,3 +212,49 @@ generator.widgets.find((w) => w.name === "value").value = 4;
 assert.equal(emit("R2V")["817:812"].inputs.value, 6, "Restoring the initial value restores saved-scene behavior");
 assert.equal(savedSettings["817:812"].value, 6, "Saved scene settings are never rewritten");
 console.log("PASS: automatic model, LoRA, strength and step overrides; untouched settings, mixed modes, repeated queue, reload and restored values.");
+
+const fresh = new Node();
+fresh.widgets[1].value = "シーン作成";
+fresh.onNodeCreated();
+const freshSelector = fresh.widgets.find((w) => w.name === "生成モード");
+assert.ok(freshSelector, "New Capture exposes generation mode before it belongs to a graph");
+assert.equal(freshSelector.h3SceneOnly, true);
+assert.deepEqual(freshSelector.options.values, ["R2V", "I2V", "L2V", "FL2V"]);
+freshSelector.callback("L2V");
+assert.equal(fresh.properties.h3_multimode.mode, "L2V", "Mode can be selected on a standalone node");
+freshSelector.callback("R2V");
+fresh.graph = uiControl.graph;
+fresh.graph._nodes.push(fresh);
+app.graph = fresh.graph;
+const modelBefore = structuredClone(generator.widgets);
+fresh.onAdded();
+await new Promise((resolve) => setImmediate(resolve));
+assert.deepEqual(generator.widgets, modelBefore, "Adding Capture does not change existing model settings");
+prompt = { output: mixed, workflow: { nodes: [], links: [] } };
+for (const mode of ["I2V", "L2V", "FL2V", "R2V"]) {
+  freshSelector.callback(mode);
+  const submitted = (await app.graphToPrompt()).output["817:136"];
+  assert.equal(submitted.class_type, mode === "R2V" ? "MiniMaxH3ReferenceToVideo" : "MiniMaxH3ImageToVideo");
+  if (mode !== "R2V") {
+    assert.equal("first_frame" in submitted.inputs, mode !== "L2V");
+    assert.equal("last_frame" in submitted.inputs, mode !== "I2V");
+  }
+}
+freshSelector.callback("FL2V");
+const reloaded = new Node();
+reloaded.onNodeCreated();
+reloaded.properties = JSON.parse(JSON.stringify(fresh.properties));
+reloaded.widgets[0].value = "saved/project";
+reloaded.widgets[1].value = "シーン作成";
+reloaded.graph = fresh.graph;
+reloaded.onConfigure();
+await new Promise((resolve) => setImmediate(resolve));
+const reloadedSelector = reloaded.widgets.find((w) => w.name === "生成モード");
+assert.equal(reloadedSelector.value, "FL2V");
+reloadedSelector.callback("I2V");
+assert.equal(reloaded.properties.h3_multimode.mode, "I2V", "Reloaded selector updates the restored configuration");
+assert.equal(reloaded.widgets[0].value, "saved/project");
+reloaded.widgets[1].callback();
+assert.equal(reloaded.widgets.filter((w) => w.name === "生成モード").length, 1);
+assert.throws(() => scenePrompt({}, "I2V"), /H3生成の構成/);
+console.log("PASS: new Capture, graph attachment, four-mode prompt routing, reload, current callbacks and project path retention.");

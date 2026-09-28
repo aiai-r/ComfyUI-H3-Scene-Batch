@@ -129,6 +129,15 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       const result = created?.apply(this, arguments);
       widget(this, "execution_mode").label = "実行モード";
+      configureGeneration(this, app);
+      return result;
+    };
+    const added = nodeType.prototype.onAdded;
+    nodeType.prototype.onAdded = function () {
+      const result = added?.apply(this, arguments);
+      queueMicrotask(() => {
+        if (this.graph) configureGeneration(this, app);
+      });
       return result;
     };
     const configured = nodeType.prototype.onConfigure;

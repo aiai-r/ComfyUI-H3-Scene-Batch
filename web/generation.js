@@ -41,6 +41,7 @@ export function generationPrompt(graph, mode) {
 
 export function scenePrompt(output, mode) {
   const graph = structuredClone(output);
+  if (!graph["817:136"]) throw new Error("H3生成の構成が見つかりません。対応するシーン作成ワークフローを読み込んでください。");
   const refs = graph["817:136"].inputs;
   if (mode !== "R2V") {
     let images = refs["ref_images.ref_image_0"];
@@ -84,12 +85,13 @@ export function applySettings(graph, settings) {
 }
 
 export function configureGeneration(control, app) {
-  const config = control.properties.h3_multimode;
-  if (!config) return;
+  const config = control.properties.h3_multimode ??= { mode: "R2V", models: {}, r2vModes: {} };
   const graph = control.graph;
-  const generator = graph.getNodeById(817);
+  const generator = graph?.getNodeById(817);
   const readModel = () => Object.fromEntries(modelWidgets.map((name) => [name, widget(generator, name)?.value]));
-  if (!config.settingsBaseline) {
+  if (generator && !config.settingsBaseline) {
+    config.models.R2V ??= readModel();
+    config.models.FL2V ??= readModel();
     config.settingsBaseline = structuredClone(config.models);
     config.settingsBaseline[config.mode === "R2V" ? "R2V" : "FL2V"] = readModel();
   }
@@ -99,6 +101,7 @@ export function configureGeneration(control, app) {
     const count = mode === "R2V" ? 9 : mode === "FL2V" ? 2 : 1;
     const batch = widget(control, "execution_mode").value === "バッチ生成";
     control.h3BatchQueue?.updateVisibility();
+    if (!generator) return;
     for (let i = 0; i < 9; i++) {
       const node = graph.getNodeById(600 + i);
       if (node) node.h3Hidden = batch || i >= count;
@@ -114,6 +117,11 @@ export function configureGeneration(control, app) {
     graph.setDirtyCanvas(true, true);
   };
   const change = (mode) => {
+    if (!generator) {
+      config.mode = mode;
+      refresh();
+      return;
+    }
     const previous = config.mode;
     const oldFamily = previous === "R2V" ? "R2V" : "FL2V";
     const family = mode === "R2V" ? "R2V" : "FL2V";
@@ -121,7 +129,7 @@ export function configureGeneration(control, app) {
     if (previous === "R2V") {
       config.r2vModes = Object.fromEntries(Array.from({ length: 9 }, (_, i) => {
         const node = graph.getNodeById(600 + i);
-        return [600 + i, node.mode];
+        return [600 + i, node?.mode ?? 4];
       }));
     }
     config.mode = mode;
@@ -142,11 +150,13 @@ export function configureGeneration(control, app) {
     modeWidget.h3SceneOnly = true;
     const execution = widget(control, "execution_mode");
     const callback = execution.callback;
-    execution.callback = function () { callback?.apply(this, arguments); refresh(); };
+    execution.callback = function () { callback?.apply(this, arguments); configureGeneration(control, app); };
   }
+  modeWidget.callback = change;
   modeWidget.value = config.mode;
   refresh();
   control.setSize(control.computeSize());
+  if (!generator) return;
   if (!graph.h3VisibilityInstalled) {
     graph.h3VisibilityInstalled = true;
     const hit = graph.getNodeOnPos;
