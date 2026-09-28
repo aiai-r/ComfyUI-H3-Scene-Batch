@@ -29,6 +29,8 @@ def scene_fingerprint(scene, root=None):
         return [node["class_type"], inputs, link[1]]
 
     content = {
+        "generation_mode": scene.get("generation_mode", "R2V"),
+        "generation_settings": scene.get("generation_settings") or {},
         "prompt": scene["prompt"],
         "seed": scene["seed"],
         "duration": float(scene["duration"]),

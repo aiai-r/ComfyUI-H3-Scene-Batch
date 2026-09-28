@@ -15,6 +15,7 @@ import av
 import numpy as np
 import torch
 from aiohttp import web
+from PIL import Image
 
 import comfy.cli_args
 import folder_paths
@@ -44,6 +45,51 @@ from comfy_extras.nodes_audio import TrimAudioDuration
 
 
 class SceneMediaTests(unittest.TestCase):
+    def test_mixed_modes_save_and_restore_settings_and_assets(self):
+        first = self.root / "first.png"
+        last = self.root / "last.png"
+        Image.new("RGB", (32, 32), "red").save(first)
+        Image.new("RGB", (32, 32), "blue").save(last)
+        project = self.root / "mixed"
+        for index, mode in enumerate(("I2V", "R2V", "L2V", "FL2V")):
+            graph = self.graph()
+            refs = {"prompt": ["prompt", 0]}
+            graph["first"] = {"class_type": "LoadImage", "inputs": {"image": first.name}}
+            graph["last"] = {"class_type": "LoadImage", "inputs": {"image": last.name}}
+            if mode == "R2V":
+                refs.update({"ref_images.ref_image_0": ["first", 0], "ref_audios.ref_audio_0": ["a", 0]})
+            else:
+                if mode != "L2V":
+                    refs["first_frame"] = ["first", 0]
+                if mode != "I2V":
+                    refs["last_frame"] = ["last" if mode == "FL2V" else "first", 0]
+            graph.update({
+                "817:136": {"class_type": "MiniMaxH3ReferenceToVideo" if mode == "R2V" else "MiniMaxH3ImageToVideo", "inputs": refs, "_meta": {"h3_multimode": True}},
+                "224": {"inputs": {"source": ["prompt", 0]}},
+                "817:129": {"inputs": {"noise_seed": 17}},
+                "817:819": {"inputs": {"value": 5}},
+                "817:807": {"class_type": "UNETLoader", "inputs": {"unet_name": mode + ".safetensors", "weight_dtype": "default"}},
+                "817:812": {"class_type": "PrimitiveInt", "inputs": {"value": index + 4}},
+            })
+            entry = {"prompt": [0, "run", graph], "status": {"status_str": "success"}, "outputs": {"224": {"text": ["A landscape."]}}}
+            scene = nodes.latest_scene({"run": entry})
+            self.assertEqual(scene["generation_mode"], mode)
+            self.assertEqual(len(scene["image_paths"]), 2 if mode == "FL2V" else 1)
+            self.assertEqual(bool(scene["media"]["outputs"]), mode == "R2V")
+            nodes.save_scene(str(project), f"scene{index + 1:02d}", scene["prompt"], "\n".join(scene["image_paths"]), 17, 5, scene["media"], mode, scene["generation_settings"])
+            request = types.SimpleNamespace(json=AsyncMock(return_value={"manifest_path": str(project / "scenes.json"), "start_at": index}))
+            config = json.loads(asyncio.run(nodes.scene_config(request)).text)
+            self.assertEqual(config["generation_mode"], mode)
+            self.assertEqual(config["generation_settings"]["817:812"]["value"], index + 4)
+            loaded = nodes.H3SceneBatchLoad().load(str(project / "scenes.json"), str(project / "images"), index, True, mode)
+            self.assertTrue(Path(loaded["result"][3]).is_file())
+            self.assertEqual(bool(loaded["result"][13]), mode == "R2V")
+            self.assertEqual(len(nodes.duplicate_scenes(str(project), scene)[1]), 1)
+            if mode != "R2V":
+                with self.assertRaisesRegex(ValueError, "mode does not match"):
+                    nodes.H3SceneBatchLoad().load(str(project / "scenes.json"), str(project / "images"), index, True)
+        self.assertEqual([s["generation_mode"] for s in json.loads((project / "scenes.json").read_text())], ["I2V", "R2V", "L2V", "FL2V"])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -233,7 +279,7 @@ class SceneMediaTests(unittest.TestCase):
     def test_capture_uses_completed_history_connections(self):
         graph = self.graph()
         graph.update({
-            "817:136": {"inputs": {"prompt": ["prompt", 0], "ref_audios.ref_audio_0": ["t", 0]}},
+            "817:136": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": ["prompt", 0], "ref_audios.ref_audio_0": ["t", 0]}},
             "224": {"inputs": {"source": ["prompt", 0]}},
             "817:129": {"inputs": {"noise_seed": 17}},
             "817:819": {"inputs": {"value": 4}},
@@ -247,7 +293,7 @@ class SceneMediaTests(unittest.TestCase):
 
     def test_capture_resolves_linked_seed_and_duration_before_saving(self):
         graph = {
-            "817:136": {"inputs": {"prompt": ["prompt", 0]}},
+            "817:136": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": ["prompt", 0]}},
             "224": {"inputs": {"source": ["prompt", 0]}},
             "817:129": {"inputs": {"noise_seed": ["841", 0]}},
             "841": {"class_type": "ttN seed", "inputs": {"seed": ["number", 0]}},

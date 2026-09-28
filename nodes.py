@@ -15,6 +15,7 @@ from comfy_extras.nodes_audio import load as load_audio
 from server import PromptServer
 from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media, is_link
 from .duplicates import duplicate_scenes
+from .modes import MODES, capture_settings, scene_mode
 
 
 def validate_scene_numbers(seed, duration):
@@ -39,8 +40,10 @@ def resolve_number(graph, value):
     return value
 
 
-def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None):
+def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None, generation_mode="R2V", generation_settings=None):
     validate_scene_numbers(seed, duration)
+    if generation_mode not in MODES:
+        raise ValueError(f"Unsupported H3 mode: {generation_mode}")
     if not project_dir.strip():
         raise ValueError("Set a project directory.")
     if not prompt.strip():
@@ -79,6 +82,9 @@ def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media
         images.append(target.relative_to(project / "images").as_posix())
 
     scene = {"id": scene_id, "prompt": prompt, "images": images, "seed": seed, "duration": duration}
+    scene["generation_mode"] = generation_mode
+    if generation_settings is not None:
+        scene["generation_settings"] = generation_settings
     if media is not None:
         scene["media"] = copy_media(media, project / "images", scene_id)
     scenes.append(scene)
@@ -106,10 +112,14 @@ def latest_scene(history):
         references = graph["817:136"]["inputs"]
         if graph["224"]["inputs"]["source"] != references["prompt"]:
             raise ValueError("The preview prompt does not match the generated video prompt.")
+        mode = scene_mode(graph["817:136"])
+        names = [f"ref_images.ref_image_{i}" for i in range(9)] if mode == "R2V" else {
+            "I2V": ["first_frame"], "L2V": ["last_frame"], "FL2V": ["first_frame", "last_frame"],
+        }[mode]
         image_paths = []
         missing_image = False
-        for index in range(9):
-            link = references.get(f"ref_images.ref_image_{index}")
+        for name in names:
+            link = references.get(name)
             if link is None:
                 missing_image = True
                 continue
@@ -126,6 +136,8 @@ def latest_scene(history):
         duration = resolve_number(graph, graph["817:819"]["inputs"]["value"])
         validate_scene_numbers(seed, duration)
         return {
+            "generation_mode": mode,
+            "generation_settings": capture_settings(graph) if graph["817:136"].get("_meta", {}).get("h3_multimode") else None,
             "prompt_id": prompt_id,
             "prompt": output[0],
             "image_paths": image_paths,
@@ -152,7 +164,7 @@ async def save_latest(request):
         path = save_scene(
             data["project_dir"], scene_id, scene["prompt"],
             "\n".join(scene["image_paths"]), scene["seed"], scene["duration"],
-            scene["media"],
+            scene["media"], scene.get("generation_mode", "R2V"), scene.get("generation_settings"),
         )
     except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
@@ -187,6 +199,23 @@ async def manifest_info(request):
     except (KeyError, TypeError, ValueError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
     return web.json_response({"scene_count": len(scenes)})
+
+
+@PromptServer.instance.routes.post("/h3_scene_batch/scene_config")
+async def scene_config(request):
+    data = await request.json()
+    try:
+        scenes = json.loads(Path(data["manifest_path"]).expanduser().read_text(encoding="utf-8"))
+        index = data["start_at"]
+        if type(index) is not int or index < 0 or index >= len(scenes):
+            raise ValueError("Saved scene index is out of range.")
+        scene = scenes[index]
+        mode = scene.get("generation_mode", "R2V")
+        if mode not in MODES:
+            raise ValueError(f"Unsupported H3 mode: {mode}")
+        return web.json_response({"generation_mode": mode, "generation_settings": scene.get("generation_settings", {})})
+    except (KeyError, TypeError, ValueError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=400)
 
 
 class H3SceneCapture:
@@ -261,7 +290,7 @@ class H3SceneBatchLoad:
             "image_root": ("STRING", {"default": ""}),
             "start_at": ("INT", {"default": 0, "min": 0}),
             "auto_queue": ("BOOLEAN", {"default": True}),
-        }}
+        }, "optional": {"generation_mode": (list(MODES), {"default": "R2V", "forceInput": True})}}
 
     RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("STRING",) * 10 + tuple(kind for _, kind in MEDIA_INPUTS)
     RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_path_{i}" for i in range(1, 10)) + ("filename_prefix",) + tuple(name.split(".")[1] for name, _ in MEDIA_INPUTS)
@@ -272,7 +301,7 @@ class H3SceneBatchLoad:
     def IS_CHANGED(cls, manifest_path, **kwargs):
         return os.path.getmtime(manifest_path)
 
-    def load(self, manifest_path, image_root, start_at, auto_queue):
+    def load(self, manifest_path, image_root, start_at, auto_queue, generation_mode="R2V"):
         scenes = json.loads(Path(manifest_path).expanduser().read_text(encoding="utf-8"))
         if not scenes:
             raise ValueError("No saved scenes found.")
@@ -280,6 +309,8 @@ class H3SceneBatchLoad:
             raise ValueError(f"Scene index {start_at} is beyond the {len(scenes)} saved scenes.")
         root = Path(image_root).expanduser().resolve()
         scene = scenes[start_at]
+        if scene.get("generation_mode", "R2V") != generation_mode:
+            raise ValueError("Scene mode does not match the queued graph. Use the multimode workflow and queue again.")
         seed = 4 if is_link(scene["seed"]) else scene["seed"]
         try:
             validate_scene_numbers(seed, scene["duration"])

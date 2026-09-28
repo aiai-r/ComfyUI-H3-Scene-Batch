@@ -1,10 +1,12 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+import { generationPrompt, scenePrompt, applySettings, configureGeneration } from "./generation.js";
 
 const widget = (node, name) => node.widgets.find((item) => item.name === name);
 const nodeById = (graph, id) => graph.getNodeById(id) ?? graph.getNodeById(Number(id));
 const isLink = (value) => Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number";
 
-export function batchPrompt(output, control) {
+export function batchPrompt(output, control, saved = null) {
   const graph = structuredClone(output);
   const refs = graph["817:136"]?.inputs;
   if (!refs || !graph["817:129"] || !graph["817:819"] || !graph["92"]) {
@@ -30,6 +32,11 @@ export function batchPrompt(output, control) {
     for (let index = 0; index < 3; index++) refs[`${group}.${name}_${index}`] = [loader, slot++];
   }
   graph["92"].inputs.filename_prefix = [loader, 12];
+  if (saved) {
+    graph[loader].inputs.generation_mode = saved.generation_mode;
+    generationPrompt(graph, saved.generation_mode);
+    applySettings(graph, saved.generation_settings);
+  }
   const needed = {};
   function visit(id) {
     if (needed[id]) return;
@@ -79,6 +86,7 @@ function restoreCapture(control) {
   while (control.outputs?.length) control.removeOutput(control.outputs.length - 1);
   delete control.properties.h3_unified_controls;
   control.h3BatchQueue?.configure();
+  configureGeneration(control, app);
   control.setSize(control.computeSize());
   control.setDirtyCanvas(true, true);
 }
@@ -91,7 +99,23 @@ app.registerExtension({
       const result = await original.apply(this, arguments);
       const controls = (app.graph?._nodes ?? []).filter((node) => node.type === "H3SceneCapture" && node.mode === 0 && widget(node, "execution_mode")?.value === "バッチ生成");
       if (controls.length > 1) throw new Error("バッチ生成にするCaptureは1つにしてください。");
-      if (controls.length === 1) result.output = batchPrompt(result.output, controls[0]);
+      if (controls.length === 1) {
+        const control = controls[0];
+        let saved = null;
+        if (control.properties.h3_multimode) {
+          const project = widget(control, "project_dir").value.replace(/[\\/]+$/, "");
+          const response = await api.fetchApi("/h3_scene_batch/scene_config", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ manifest_path: project + "/scenes.json", start_at: widget(control, "start_at").value }),
+          });
+          saved = await response.json();
+          if (!response.ok) throw new Error(saved.error);
+        }
+        result.output = batchPrompt(result.output, control, saved);
+      } else {
+        const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.mode === 0 && node.properties.h3_multimode);
+        if (control) result.output = scenePrompt(result.output, control.properties.h3_multimode.mode);
+      }
       return result;
     };
   },
