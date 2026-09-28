@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { generationPrompt, scenePrompt, applySettings, configureGeneration } from "./generation.js";
+import { generationPrompt, scenePrompt, applySettings, changedSettings, configureGeneration } from "./generation.js";
 
 const widget = (node, name) => node.widgets.find((item) => item.name === name);
 const nodeById = (graph, id) => graph.getNodeById(id) ?? graph.getNodeById(Number(id));
@@ -35,7 +35,11 @@ export function batchPrompt(output, control, saved = null) {
   if (saved) {
     graph[loader].inputs.generation_mode = saved.generation_mode;
     generationPrompt(graph, saved.generation_mode);
-    applySettings(graph, saved.generation_settings);
+    const settings = structuredClone(saved.generation_settings ?? {});
+    for (const [id, values] of Object.entries(changedSettings(control, saved.generation_mode))) {
+      if (graph[id]) settings[id] = { ...settings[id], ...values };
+    }
+    applySettings(graph, settings);
   }
   const needed = {};
   function visit(id) {

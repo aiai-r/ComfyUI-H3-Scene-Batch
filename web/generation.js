@@ -1,6 +1,28 @@
 const widget = (node, name) => node.widgets?.find((item) => item.name === name);
 const MODES = ["R2V", "I2V", "L2V", "FL2V"];
 const modelWidgets = ["unet_name", "lora_name", "strength_model", "lora_name_1", "strength_model_1", "value"];
+const modelInputs = {
+  unet_name: ["817:807", "unet_name"],
+  lora_name: ["817:808", "lora_name"], strength_model: ["817:808", "strength_model"],
+  lora_name_1: ["817:824", "lora_name"], strength_model_1: ["817:824", "strength_model"],
+  value: ["817:812", "value"],
+};
+
+export function changedSettings(control, mode) {
+  const config = control.properties.h3_multimode;
+  if (!config?.settingsBaseline) return {};
+  const family = mode === "R2V" ? "R2V" : "FL2V";
+  const activeFamily = config.mode === "R2V" ? "R2V" : "FL2V";
+  const generator = control.graph.getNodeById(817);
+  const changes = {};
+  for (const [name, [id, input]] of Object.entries(modelInputs)) {
+    const value = family === activeFamily ? widget(generator, name)?.value : config.models[family][name];
+    if (value !== undefined && value !== config.settingsBaseline[family][name]) {
+      (changes[id] ??= {})[input] = value;
+    }
+  }
+  return changes;
+}
 
 export function generationPrompt(graph, mode) {
   if (!MODES.includes(mode)) throw new Error(`Unknown H3 mode: ${mode}`);
@@ -67,6 +89,10 @@ export function configureGeneration(control, app) {
   const graph = control.graph;
   const generator = graph.getNodeById(817);
   const readModel = () => Object.fromEntries(modelWidgets.map((name) => [name, widget(generator, name)?.value]));
+  if (!config.settingsBaseline) {
+    config.settingsBaseline = structuredClone(config.models);
+    config.settingsBaseline[config.mode === "R2V" ? "R2V" : "FL2V"] = readModel();
+  }
   let modeWidget = widget(control, "生成モード");
   const refresh = () => {
     const mode = config.mode;

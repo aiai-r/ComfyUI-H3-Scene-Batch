@@ -155,3 +155,50 @@ assert.equal(generator.widgets[0].value, "custom-fl2v");
 configureGeneration(uiControl, { canvas });
 assert.equal(uiControl.widgets.filter((w) => w.name === "生成モード").length, 1);
 console.log("PASS: four mixed modes, first/last frame routing, audio exclusion, saved model/steps, LLM inputs, visibility and model-family switch restoration.");
+
+// Use the real generation node IDs so the emitted sampler graph is checked.
+const overrideGraph = structuredClone(mixed);
+overrideGraph["817:807"] = { class_type: "UNETLoader", inputs: { unet_name: "ui-model" } };
+overrideGraph["817:808"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["817:807", 0], lora_name: "ui-lora", strength_model: 1 } };
+overrideGraph["817:824"] = { class_type: "LoraLoaderModelOnly", inputs: { model: ["817:808", 0], lora_name: "ui-second", strength_model: 1 } };
+overrideGraph["817:812"] = { class_type: "PrimitiveInt", inputs: { value: 4 } };
+overrideGraph.render.inputs.model = ["817:824", 0];
+overrideGraph.render.inputs.steps = ["817:812", 0];
+const savedSettings = {
+  "817:807": { unet_name: "saved-model" },
+  "817:808": { lora_name: "saved-lora", strength_model: 0.7 },
+  "817:824": { lora_name: "saved-second", strength_model: 0.8 },
+  "817:812": { value: 6 },
+};
+const initial = { unet_name: "ui-model", lora_name: "ui-lora", strength_model: 1, lora_name_1: "ui-second", strength_model_1: 1, value: 4 };
+const config = uiControl.properties.h3_multimode;
+config.mode = "R2V";
+config.models = { R2V: { ...initial }, FL2V: { ...initial, unet_name: "fl-model" } };
+delete config.settingsBaseline;
+for (const w of generator.widgets) w.value = initial[w.name];
+configureGeneration(uiControl, { canvas });
+const emit = (mode) => batchPrompt(overrideGraph, uiControl, { generation_mode: mode, generation_settings: savedSettings });
+assert.equal(emit("R2V")["817:812"].inputs.value, 6, "Untouched controls preserve each scene's saved settings");
+generator.widgets.find((w) => w.name === "value").value = 8;
+assert.equal(emit("R2V")["817:812"].inputs.value, 8, "Step edit reaches the sampler without a settings switch");
+assert.equal(emit("R2V")["817:807"].inputs.unet_name, "saved-model", "Step edit does not override an untouched model");
+generator.widgets.find((w) => w.name === "unet_name").value = "changed-model";
+generator.widgets.find((w) => w.name === "lora_name").value = "changed-lora";
+generator.widgets.find((w) => w.name === "strength_model").value = 0.4;
+for (const mode of ["R2V", "I2V", "FL2V", "L2V", "R2V"]) {
+  const result = emit(mode);
+  assert.equal(result["817:807"].inputs.unet_name, mode === "R2V" ? "changed-model" : "saved-model");
+  assert.equal(result["817:808"].inputs.lora_name, mode === "R2V" ? "changed-lora" : "saved-lora");
+  assert.equal(result["817:808"].inputs.strength_model, mode === "R2V" ? 0.4 : 0.7);
+  assert.equal(result["817:824"].inputs.lora_name, "saved-second");
+  assert.equal(result["817:812"].inputs.value, mode === "R2V" ? 8 : 6);
+}
+config.models.FL2V.unet_name = "changed-fl-model";
+assert.equal(emit("I2V")["817:807"].inputs.unet_name, "changed-fl-model");
+uiControl.properties.h3_multimode = JSON.parse(JSON.stringify(config));
+configureGeneration(uiControl, { canvas });
+assert.equal(emit("R2V")["817:812"].inputs.value, 8, "Workflow reload preserves change detection");
+generator.widgets.find((w) => w.name === "value").value = 4;
+assert.equal(emit("R2V")["817:812"].inputs.value, 6, "Restoring the initial value restores saved-scene behavior");
+assert.equal(savedSettings["817:812"].value, 6, "Saved scene settings are never rewritten");
+console.log("PASS: automatic model, LoRA, strength and step overrides; untouched settings, mixed modes, repeated queue, reload and restored values.");
