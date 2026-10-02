@@ -39,35 +39,40 @@ export function generationPrompt(graph, mode) {
   return graph;
 }
 
+// Image input for the LLM in I2V/L2V/FL2V: image 1, or images 1 and 2 for FL2V.
+function modeImages(graph, mode) {
+  const refs = graph["817:136"]?.inputs ?? {};
+  const first = refs["ref_images.ref_image_0"] ?? (graph["600"] ? ["600", 0] : undefined);
+  if (mode !== "FL2V") return first;
+  const second = refs["ref_images.ref_image_1"] ?? (graph["601"] ? ["601", 0] : undefined);
+  graph["830:scene_images"] = { class_type: "ImageTensorList", inputs: { image1: first, image2: second } };
+  return ["830:scene_images", 0];
+}
+
+function frameLLM(graph, llm, title, instruction, images) {
+  for (const id of [`${llm}:210`, `${llm}:803`]) {
+    if (graph[id] && images !== undefined) graph[id].inputs.images = images;
+  }
+  for (const id of [`${llm}:492`, `${llm}:803`]) {
+    const inputs = graph[id]?.inputs;
+    const key = id.endsWith(":492") ? "value" : "system_prompt";
+    if (typeof inputs?.[key] === "string") {
+      inputs[key] = `Generate a MiniMax H3 ${title}. ${instruction} No reference audio is supplied. Do not use R2V subject_definitions or retention_analysis. Preserve the user's action, dialogue, duration and sound instructions. Use summary, detailed_description with timed shots, overall_soundscape and non_diegetic_music.\n\n` +
+        (id.endsWith(":803") ? inputs[key] : "Describe the visible first/last frames accurately and respect their assigned time positions.");
+    }
+  }
+}
+
+const FRAME_TEXT = {
+  I2V: "Image 1 is the exact first frame at 0 seconds.",
+  L2V: "Image 1 is the exact last frame at the end of the video. Build the action toward it.",
+  FL2V: "Image 1 is the exact first frame; Image 2 is the exact last frame. Connect these endpoints in order.",
+};
+
 export function scenePrompt(output, mode) {
   const graph = structuredClone(output);
   if (!graph["817:136"]) throw new Error("H3生成の構成が見つかりません。対応するシーン作成ワークフローを読み込んでください。");
-  const refs = graph["817:136"].inputs;
-  if (mode !== "R2V") {
-    let images = refs["ref_images.ref_image_0"];
-    if (mode === "FL2V") {
-      graph["830:scene_images"] = { class_type: "ImageTensorList", inputs: {
-        image1: images, image2: refs["ref_images.ref_image_1"],
-      } };
-      images = ["830:scene_images", 0];
-    }
-    for (const id of ["822:210", "822:803"]) {
-      if (graph[id]) graph[id].inputs.images = images;
-    }
-    const instruction = {
-      I2V: "Image 1 is the exact first frame at 0 seconds.",
-      L2V: "Image 1 is the exact last frame at the end of the video. Build the action toward it.",
-      FL2V: "Image 1 is the exact first frame; Image 2 is the exact last frame. Connect these endpoints in order.",
-    }[mode];
-    for (const id of ["822:492", "822:803"]) {
-      const inputs = graph[id]?.inputs;
-      const key = id.endsWith(":492") ? "value" : "system_prompt";
-      if (typeof inputs?.[key] === "string") {
-        inputs[key] = `Generate a MiniMax H3 ${mode} video prompt. ${instruction} No reference audio is supplied. Do not use R2V subject_definitions or retention_analysis. Preserve the user's action, dialogue, duration and sound instructions. Use summary, detailed_description with timed shots, overall_soundscape and non_diegetic_music.\n\n` +
-          (id.endsWith(":803") ? inputs[key] : "Describe the visible first/last frames accurately and respect their assigned time positions.");
-      }
-    }
-  }
+  if (mode !== "R2V") frameLLM(graph, "822", `${mode} video prompt`, FRAME_TEXT[mode], modeImages(graph, mode));
   return generationPrompt(graph, mode);
 }
 
@@ -102,26 +107,22 @@ function convertCut(node, mode, last) {
   if (last && mode !== "I2V") node.inputs.last_frame = images[mode === "FL2V" ? 1 : 0];
 }
 
-export function cutInstructions(graph, mode, count) {
-  if (mode === "R2V" || !hasCuts(graph)) return;
-  const images = graph["822:210"]?.inputs.images;
-  for (const cut of EXTRA_CUTS.filter((item) => item <= count)) {
-    const llm = cutIds(cut).llm;
-    for (const id of [`${llm}:210`, `${llm}:803`]) {
-      if (graph[id] && images !== undefined) graph[id].inputs.images = images;
-    }
+// LLM instructions of every cut LLM present in the graph (cut workflow, I2V/L2V/FL2V).
+export function cutLLMs(graph, mode, count) {
+  if (mode === "R2V") return;
+  const images = modeImages(graph, mode);
+  const reference = " The supplied images are visual references only, not frames.";
+  const first = count === 1 ? FRAME_TEXT[mode]
+    : mode === "L2V" ? reference.trim()
+    : mode === "FL2V" ? "Image 1 is the exact first frame at 0 seconds. Image 2 is a visual reference only, not a frame."
+    : FRAME_TEXT.I2V;
+  frameLLM(graph, "822", `${mode} video prompt`, first, images);
+  for (const cut of EXTRA_CUTS) {
     const instruction = "This cut continues directly from the end of the previous cut; its opening frames are the previous cut's final frames, so there is no first-frame image." +
       (cut === count && mode !== "I2V"
         ? ` Image ${mode === "FL2V" ? 2 : 1} is the exact last frame at the end of the video. Build the action toward it.`
-        : " The supplied images are visual references only, not frames.");
-    for (const id of [`${llm}:492`, `${llm}:803`]) {
-      const inputs = graph[id]?.inputs;
-      const key = id.endsWith(":492") ? "value" : "system_prompt";
-      if (typeof inputs?.[key] === "string") {
-        inputs[key] = `Generate a MiniMax H3 video prompt for a continuation cut. ${instruction} No reference audio is supplied. Do not use R2V subject_definitions or retention_analysis. Preserve the user's action, dialogue, duration and sound instructions. Use summary, detailed_description with timed shots, overall_soundscape and non_diegetic_music.\n\n` +
-          (id.endsWith(":803") ? inputs[key] : "Describe the visible frames accurately and respect their assigned time positions.");
-      }
-    }
+        : reference);
+    frameLLM(graph, cutIds(cut).llm, "video prompt for a continuation cut", instruction, images);
   }
 }
 
@@ -169,45 +170,62 @@ const cutPrompt = (cut) => cut === 1
   ? { llm: "822", preview: "224", cond: "817:136" }
   : { llm: cutIds(cut).llm, preview: cutIds(cut).preview, cond: cutIds(cut).cond };
 
-function keepOnly(graph, roots) {
-  const needed = {};
-  const visit = (id) => {
-    if (needed[id]) return;
-    needed[id] = graph[id];
-    for (const value of Object.values(graph[id].inputs)) {
-      if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number") visit(value[0]);
-    }
-  };
-  for (const root of roots) visit(root);
-  for (const id of Object.keys(graph)) if (!needed[id]) delete graph[id];
+export const promptCut = (run) => [1, 2, 3, 4].find((cut) => promptRun(cut) === run);
+
+// Cuts whose LLM runs in this graph; remembered when their prompt preview arrives.
+export function promptRuns(graph, mode, cuts) {
+  const runs = {};
+  for (const cut of cuts) {
+    const ids = cutPrompt(cut);
+    if (graph[`${ids.llm}:210`]) runs[ids.preview] = { cut, mode, instruction: graph[`${ids.llm}:495`]?.inputs.value };
+  }
+  return runs;
 }
 
-// Runs only the LLM of one cut; returns what to remember when its preview arrives.
-export function promptOnly(graph, cut, count, mode) {
-  if (cut > count) throw new Error(`カット数が ${count} なので、カット${cut}は使われません。`);
-  const ids = cutPrompt(cut);
-  const instruction = graph[`${ids.llm}:495`]?.inputs.value;
-  keepOnly(graph, [ids.preview]);
-  return { [ids.preview]: { cut, mode, instruction } };
-}
-
-// Uses prompts already made for unchanged instructions; returns the cuts whose LLM still runs.
-export function useSavedPrompts(graph, count, mode, saved = {}) {
-  const pending = {};
+// A cut whose LLM is bypassed uses the prompt made earlier.
+export function useSavedPrompts(graph, count, saved = {}) {
   for (let cut = 1; cut <= count; cut++) {
     const ids = cutPrompt(cut);
-    const instruction = graph[`${ids.llm}:495`]?.inputs.value;
-    const prompt = saved[cut];
-    if (!prompt || prompt.mode !== mode || prompt.instruction !== instruction) {
-      pending[ids.preview] = { cut, mode, instruction };
-      continue;
-    }
-    graph[ids.cond].inputs.prompt = prompt.prompt;
-    graph[ids.preview].inputs.source = prompt.prompt;
-    for (const key of Object.keys(graph)) if (key.startsWith(`${ids.llm}:`)) delete graph[key];
-    if (cut === 1) delete graph["805"];
+    if (graph[`${ids.llm}:210`]) continue;
+    const prompt = saved[cut]?.prompt;
+    if (!prompt) throw new Error(`カット${cut}のPromptがありません。カット${cut}の指示（Llama-cpp）のバイパスを解除してください。`);
+    graph[ids.cond].inputs.prompt = prompt;
+    graph[ids.preview].inputs.source = prompt;
   }
-  return pending;
+}
+
+const savedPrompt = (control, cut) => {
+  const saved = control.properties.h3_cuts.prompts?.[cut];
+  const llm = control.graph?.getNodeById(cut === 1 ? 822 : 950 + cut);
+  return Boolean(saved && llm && saved.mode === control.properties.h3_multimode?.mode && saved.instruction === widget(llm, "value")?.value);
+};
+
+// Bypass state shown on the canvas for the selected cut count and run.
+export function applyBypass(control) {
+  const cuts = control.properties.h3_cuts;
+  const graph = control.graph;
+  if (!cuts || !graph) return;
+  const set = (id, on) => {
+    const node = graph.getNodeById(id);
+    if (node) node.mode = on ? 0 : 4;
+  };
+  const batch = widget(control, "execution_mode")?.value === "バッチ生成";
+  const only = batch ? undefined : promptCut(widget(control, "実行内容")?.value);
+  set(817, !only);
+  set(92, !only);
+  for (let cut = 1; cut <= 4; cut++) {
+    const used = only ? cut === only : cut <= cuts.count;
+    const llm = !batch && (only ? cut === only : used && !savedPrompt(control, cut));
+    set(cut === 1 ? 822 : 950 + cut, llm);
+    if (cut === 1) {
+      set(805, llm);
+      set(224, !batch && used);
+    } else {
+      set(960 + cut, !batch && used);
+      set(970 + cut, batch || (!only && used));
+    }
+  }
+  graph.setDirtyCanvas(true, true);
 }
 
 export function applySettings(graph, settings) {
@@ -253,14 +271,7 @@ export function configureGeneration(control, app) {
       const node = graph.getNodeById(id);
       if (node) node.h3Hidden = batch || mode !== "R2V";
     }
-    if (control.properties.h3_cuts) {
-      for (const cut of EXTRA_CUTS) {
-        for (const id of [950 + cut, 960 + cut, 970 + cut]) {
-          const node = graph.getNodeById(id);
-          if (node) node.h3Hidden = batch || cut > control.properties.h3_cuts.count;
-        }
-      }
-    }
+    applyBypass(control);
     graph.setDirtyCanvas(true, true);
   };
   const change = (mode) => {
@@ -317,6 +328,7 @@ export function configureGeneration(control, app) {
       runWidget = control.addWidget("combo", "実行内容", VIDEO_RUN, () => {}, { values: [VIDEO_RUN, ...[1, 2, 3, 4].map(promptRun)], serialize: false });
       runWidget.h3SceneOnly = true;
     }
+    runWidget.callback = () => applyBypass(control);
   }
   refresh();
   control.setSize(control.computeSize());

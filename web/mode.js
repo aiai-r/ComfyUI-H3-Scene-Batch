@@ -2,8 +2,8 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
   generationPrompt, scenePrompt, applySettings, changedSettings, configureGeneration,
-  applyCuts, copyCutReferences, cutIds, cutInstructions, hasCuts,
-  VIDEO_RUN, promptRun, promptOnly, useSavedPrompts,
+  applyCuts, copyCutReferences, cutIds, cutLLMs, hasCuts,
+  applyBypass, promptCut, promptRuns, useSavedPrompts,
 } from "./generation.js";
 
 const widget = (node, name) => node.widgets.find((item) => item.name === name);
@@ -115,6 +115,9 @@ app.registerExtension({
   setup() {
     const original = app.graphToPrompt;
     app.graphToPrompt = async function () {
+      for (const node of app.graph?._nodes ?? []) {
+        if (node.type === "H3SceneCapture" && node.mode === 0) applyBypass(node);
+      }
       const result = await original.apply(this, arguments);
       const controls = (app.graph?._nodes ?? []).filter((node) => node.type === "H3SceneCapture" && node.mode === 0 && widget(node, "execution_mode")?.value === "バッチ生成");
       if (controls.length > 1) throw new Error("バッチ生成にするCaptureは1つにしてください。");
@@ -133,20 +136,23 @@ app.registerExtension({
         result.output = batchPrompt(result.output, control, saved);
       } else {
         const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.mode === 0 && node.properties.h3_multimode);
-        if (control) {
+        if (control?.properties.h3_cuts) {
           const mode = control.properties.h3_multimode.mode;
-          const count = control.properties.h3_cuts?.count ?? 1;
-          result.output = scenePrompt(result.output, mode);
-          cutInstructions(result.output, mode, count);
-          const run = widget(control, "実行内容")?.value ?? VIDEO_RUN;
-          if (control.properties.h3_cuts && run !== VIDEO_RUN) {
-            const cut = [1, 2, 3, 4].find((item) => promptRun(item) === run);
-            control.h3PromptRuns = promptOnly(result.output, cut, count, mode);
+          const count = control.properties.h3_cuts.count;
+          const graph = structuredClone(result.output);
+          cutLLMs(graph, mode, count);
+          const only = promptCut(widget(control, "実行内容")?.value);
+          if (only) {
+            control.h3PromptRuns = promptRuns(graph, mode, [only]);
           } else {
-            applyCuts(result.output, count, mode);
-            control.h3PromptRuns = control.properties.h3_cuts
-              ? useSavedPrompts(result.output, count, mode, control.properties.h3_cuts.prompts) : {};
+            generationPrompt(graph, mode);
+            applyCuts(graph, count, mode);
+            control.h3PromptRuns = promptRuns(graph, mode, [1, 2, 3, 4].filter((cut) => cut <= count));
+            useSavedPrompts(graph, count, control.properties.h3_cuts.prompts);
           }
+          result.output = graph;
+        } else if (control) {
+          result.output = scenePrompt(result.output, control.properties.h3_multimode.mode);
         } else if (hasCuts(result.output)) {
           applyCuts(result.output, 1, "R2V");
         }
@@ -162,6 +168,7 @@ app.registerExtension({
       if (!run || typeof text !== "string") return;
       (control.properties.h3_cuts.prompts ??= {})[run.cut] = { mode: run.mode, instruction: run.instruction, prompt: text };
       delete control.h3PromptRuns[id];
+      applyBypass(control);
     });
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
