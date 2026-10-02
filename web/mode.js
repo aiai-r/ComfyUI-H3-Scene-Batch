@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 import {
   generationPrompt, scenePrompt, applySettings, changedSettings, configureGeneration,
   applyCuts, copyCutReferences, cutIds, cutInstructions, hasCuts,
+  VIDEO_RUN, promptRun, promptOnly, useSavedPrompts,
 } from "./generation.js";
 
 const widget = (node, name) => node.widgets.find((item) => item.name === name);
@@ -137,13 +138,31 @@ app.registerExtension({
           const count = control.properties.h3_cuts?.count ?? 1;
           result.output = scenePrompt(result.output, mode);
           cutInstructions(result.output, mode, count);
-          applyCuts(result.output, count, mode);
+          const run = widget(control, "実行内容")?.value ?? VIDEO_RUN;
+          if (control.properties.h3_cuts && run !== VIDEO_RUN) {
+            const cut = [1, 2, 3, 4].find((item) => promptRun(item) === run);
+            control.h3PromptRuns = promptOnly(result.output, cut, count, mode);
+          } else {
+            applyCuts(result.output, count, mode);
+            control.h3PromptRuns = control.properties.h3_cuts
+              ? useSavedPrompts(result.output, count, mode, control.properties.h3_cuts.prompts) : {};
+          }
         } else if (hasCuts(result.output)) {
           applyCuts(result.output, 1, "R2V");
         }
       }
       return result;
     };
+    // Remember each cut's generated prompt so later runs reuse it.
+    api.addEventListener("executed", ({ detail }) => {
+      const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.properties.h3_cuts);
+      const id = String(detail.display_node ?? detail.node);
+      const run = control?.h3PromptRuns?.[id];
+      const text = detail.output?.text?.[0];
+      if (!run || typeof text !== "string") return;
+      (control.properties.h3_cuts.prompts ??= {})[run.cut] = { mode: run.mode, instruction: run.instruction, prompt: text };
+      delete control.h3PromptRuns[id];
+    });
   },
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "H3SceneCapture") return;

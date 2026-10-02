@@ -162,6 +162,54 @@ export function applyCuts(graph, count, mode) {
   return [STREAM];
 }
 
+// Per-cut prompt nodes: cut 1 uses the original LLM (822) and preview (224).
+export const VIDEO_RUN = "動画生成";
+export const promptRun = (cut) => `カット${cut}のPromptだけ`;
+const cutPrompt = (cut) => cut === 1
+  ? { llm: "822", preview: "224", cond: "817:136" }
+  : { llm: cutIds(cut).llm, preview: cutIds(cut).preview, cond: cutIds(cut).cond };
+
+function keepOnly(graph, roots) {
+  const needed = {};
+  const visit = (id) => {
+    if (needed[id]) return;
+    needed[id] = graph[id];
+    for (const value of Object.values(graph[id].inputs)) {
+      if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number") visit(value[0]);
+    }
+  };
+  for (const root of roots) visit(root);
+  for (const id of Object.keys(graph)) if (!needed[id]) delete graph[id];
+}
+
+// Runs only the LLM of one cut; returns what to remember when its preview arrives.
+export function promptOnly(graph, cut, count, mode) {
+  if (cut > count) throw new Error(`カット数が ${count} なので、カット${cut}は使われません。`);
+  const ids = cutPrompt(cut);
+  const instruction = graph[`${ids.llm}:495`]?.inputs.value;
+  keepOnly(graph, [ids.preview]);
+  return { [ids.preview]: { cut, mode, instruction } };
+}
+
+// Uses prompts already made for unchanged instructions; returns the cuts whose LLM still runs.
+export function useSavedPrompts(graph, count, mode, saved = {}) {
+  const pending = {};
+  for (let cut = 1; cut <= count; cut++) {
+    const ids = cutPrompt(cut);
+    const instruction = graph[`${ids.llm}:495`]?.inputs.value;
+    const prompt = saved[cut];
+    if (!prompt || prompt.mode !== mode || prompt.instruction !== instruction) {
+      pending[ids.preview] = { cut, mode, instruction };
+      continue;
+    }
+    graph[ids.cond].inputs.prompt = prompt.prompt;
+    graph[ids.preview].inputs.source = prompt.prompt;
+    for (const key of Object.keys(graph)) if (key.startsWith(`${ids.llm}:`)) delete graph[key];
+    if (cut === 1) delete graph["805"];
+  }
+  return pending;
+}
+
 export function applySettings(graph, settings) {
   for (const [id, values] of Object.entries(settings ?? {})) {
     const node = graph[id];
@@ -264,6 +312,11 @@ export function configureGeneration(control, app) {
       refresh();
     };
     cutWidget.value = control.properties.h3_cuts.count;
+    let runWidget = widget(control, "実行内容");
+    if (!runWidget) {
+      runWidget = control.addWidget("combo", "実行内容", VIDEO_RUN, () => {}, { values: [VIDEO_RUN, ...[1, 2, 3, 4].map(promptRun)], serialize: false });
+      runWidget.h3SceneOnly = true;
+    }
   }
   refresh();
   control.setSize(control.computeSize());
