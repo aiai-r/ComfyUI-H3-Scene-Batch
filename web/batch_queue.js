@@ -4,6 +4,7 @@ import { api } from "../../scripts/api.js";
 class SceneBatchQueue {
   pending = null;
   completed = 0;
+  cut = 0;
   timer = null;
   refreshId = 0;
   hiddenWidgets = new Map();
@@ -24,6 +25,7 @@ class SceneBatchQueue {
       this.index.value = Math.max(0, Math.trunc(value) - 1);
       this.start.value = this.index.value + 1;
       this.completed = 0;
+      this.cut = 0;
       clearTimeout(this.timer);
       this.show(`待機：${this.start.value} / ${this.count.value}`);
     }, { min: 1, step: 10, precision: 0, serialize: false });
@@ -40,6 +42,7 @@ class SceneBatchQueue {
     pathWidget.callback = (...args) => {
       changed?.apply(pathWidget, args);
       this.completed = 0;
+      this.cut = 0;
       clearTimeout(this.timer);
       this.refresh();
     };
@@ -50,6 +53,7 @@ class SceneBatchQueue {
         clearTimeout(this.timer);
         this.pending = null;
         this.completed = 0;
+        this.cut = 0;
         this.updateVisibility();
         this.refresh();
       };
@@ -94,8 +98,9 @@ class SceneBatchQueue {
     if (!this.mode) return;
     const batch = this.mode.value === "バッチ生成";
     const batchWidgets = [this.auto, this.start, this.count, this.progress, this.refreshButton];
+    const cuts = Boolean(this.node.properties?.h3_cuts);
     for (const item of this.node.widgets) {
-      const hidden = batchWidgets.includes(item) ? !batch : item.h3SceneOnly ? batch : false;
+      const hidden = batchWidgets.includes(item) ? !batch : item.h3SceneOnly ? batch || (item.h3CutOnly && !cuts) : false;
       if (hidden && !this.hiddenWidgets.has(item)) {
         this.hiddenWidgets.set(item, { type: item.type, computeSize: item.computeSize });
         item.type = "hidden";
@@ -159,9 +164,14 @@ class SceneBatchQueue {
     this.pending = {
       promptId: detail.prompt_id, index, count, scene: message.scene_id?.[0] ?? "",
       manifest: message.manifest_path?.[0], root: message.image_root?.[0],
+      cut: message.cut_index?.[0] ?? 0, cutCount: message.cut_count?.[0] ?? 1,
     };
     this.count.value = String(count);
-    this.show(`実行中：${index + 1} / ${count}（${this.pending.scene}）`);
+    this.show(`実行中：${index + 1} / ${count}（${this.pending.scene}${this.cutLabel(this.pending)}）`);
+  }
+
+  cutLabel(run) {
+    return run.cutCount > 1 ? ` カット ${run.cut + 1} / ${run.cutCount}` : "";
   }
 
   finish(detail, success) {
@@ -169,14 +179,24 @@ class SceneBatchQueue {
     if (!run || run.promptId !== detail.prompt_id) return;
     this.pending = null;
     if (!success) {
-      this.show(`停止：${run.index + 1} / ${run.count}（${run.scene}）／ 未完了`);
+      this.cut = 0;
+      this.show(`停止：${run.index + 1} / ${run.count}（${run.scene}${this.cutLabel(run)}）／ 未完了`);
       return;
     }
+    if (!this.matches(run) || this.index.value !== run.index || this.cut !== run.cut) {
+      if (run.cut + 1 >= run.cutCount) this.completed += 1;
+      this.cut = 0;
+      this.show(`${run.index + 1} 番目${this.cutLabel(run)} 完了／設定変更のため自動実行を停止`);
+      return;
+    }
+    if (run.cut + 1 < run.cutCount) {
+      this.cut = run.cut + 1;
+      this.show(`${run.index + 1} 番目（${run.scene}）カット ${run.cut + 1} / ${run.cutCount} 完了／次はカット ${this.cut + 1}`);
+      this.queueNext(run);
+      return;
+    }
+    this.cut = 0;
     this.completed += 1;
-    if (!this.matches(run) || this.index.value !== run.index) {
-      this.show(`${run.index + 1} 番目完了／設定変更のため自動実行を停止`);
-      return;
-    }
     if (run.index + 1 === run.count) {
       this.show(`最終シーン完了：${run.count} / ${run.count}`);
       return;
@@ -184,16 +204,21 @@ class SceneBatchQueue {
     this.index.value = run.index + 1;
     this.start.value = this.index.value + 1;
     this.show(`${run.index + 1} / ${run.count} 完了／次は ${this.start.value} 番目`);
-    if (this.auto.value) {
-      this.timer = setTimeout(async () => {
-        if (!this.matches(run) || !this.auto.value || this.pending || this.index.value !== run.index + 1) return;
-        try {
-          await app.queuePrompt(0, 1);
-        } catch (error) {
-          this.show(`キュー登録失敗：${error.message}`);
-        }
-      }, 200);
-    }
+    this.queueNext(run);
+  }
+
+  queueNext(run) {
+    if (!this.auto.value) return;
+    const index = this.index.value;
+    const cut = this.cut;
+    this.timer = setTimeout(async () => {
+      if (!this.matches(run) || !this.auto.value || this.pending || this.index.value !== index || this.cut !== cut) return;
+      try {
+        await app.queuePrompt(0, 1);
+      } catch (error) {
+        this.show(`キュー登録失敗：${error.message}`);
+      }
+    }, 200);
   }
 
   remove() {
