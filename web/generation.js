@@ -71,6 +71,97 @@ export function scenePrompt(output, mode) {
   return generationPrompt(graph, mode);
 }
 
+// Cuts 2-4 of the cut workflow: generation nodes inside 817 (chained like the
+// MultiRef AV Extension), instruction / prompt preview / seconds at the root.
+const EXTRA_CUTS = [2, 3, 4];
+const STREAM = "817:931";
+const START = "817:930";
+
+export const cutIds = (cut) => ({
+  cond: `817:${cut}000`, length: `817:${cut}001`, context: `817:${cut}002`, noise: `817:${cut}003`,
+  guider: `817:${cut}004`, sampler: `817:${cut}005`, llm: `95${cut}`, preview: `96${cut}`, seconds: `97${cut}`,
+});
+
+export const hasCuts = (graph) => Boolean(graph[STREAM]);
+
+export function copyCutReferences(graph) {
+  const refs = graph["817:136"].inputs;
+  for (const cut of EXTRA_CUTS) {
+    const node = graph[cutIds(cut).cond];
+    if (!node) continue;
+    for (const [key, value] of Object.entries(refs)) if (key.startsWith("ref_")) node.inputs[key] = value;
+  }
+}
+
+function convertCut(node, mode, last) {
+  if (mode === "R2V") return;
+  const refs = node.inputs;
+  const images = [refs["ref_images.ref_image_0"], refs["ref_images.ref_image_1"]];
+  node.class_type = "MiniMaxH3ImageToVideo";
+  node.inputs = Object.fromEntries(["clip", "vae", "prompt", "width", "height", "length"].map((key) => [key, refs[key]]));
+  if (last && mode !== "I2V") node.inputs.last_frame = images[mode === "FL2V" ? 1 : 0];
+}
+
+export function cutInstructions(graph, mode, count) {
+  if (mode === "R2V" || !hasCuts(graph)) return;
+  const images = graph["822:210"]?.inputs.images;
+  for (const cut of EXTRA_CUTS.filter((item) => item <= count)) {
+    const llm = cutIds(cut).llm;
+    for (const id of [`${llm}:210`, `${llm}:803`]) {
+      if (graph[id] && images !== undefined) graph[id].inputs.images = images;
+    }
+    const instruction = "This cut continues directly from the end of the previous cut; its opening frames are the previous cut's final frames, so there is no first-frame image." +
+      (cut === count && mode !== "I2V"
+        ? ` Image ${mode === "FL2V" ? 2 : 1} is the exact last frame at the end of the video. Build the action toward it.`
+        : " The supplied images are visual references only, not frames.");
+    for (const id of [`${llm}:492`, `${llm}:803`]) {
+      const inputs = graph[id]?.inputs;
+      const key = id.endsWith(":492") ? "value" : "system_prompt";
+      if (typeof inputs?.[key] === "string") {
+        inputs[key] = `Generate a MiniMax H3 video prompt for a continuation cut. ${instruction} No reference audio is supplied. Do not use R2V subject_definitions or retention_analysis. Preserve the user's action, dialogue, duration and sound instructions. Use summary, detailed_description with timed shots, overall_soundscape and non_diegetic_music.\n\n` +
+          (id.endsWith(":803") ? inputs[key] : "Describe the visible frames accurately and respect their assigned time positions.");
+      }
+    }
+  }
+}
+
+// Keeps only the cuts in use and returns the output nodes to run.
+export function applyCuts(graph, count, mode) {
+  if (!hasCuts(graph)) {
+    if (count > 1) throw new Error("複数カットのシーンは、カット連結版のワークフローで生成してください。");
+    return ["92"];
+  }
+  if (count > EXTRA_CUTS.length + 1) throw new Error(`カット数は ${EXTRA_CUTS.length + 1} までです。`);
+  for (const cut of EXTRA_CUTS.filter((item) => item > count)) {
+    const ids = Object.values(cutIds(cut));
+    for (const key of Object.keys(graph)) {
+      if (ids.includes(key) || key.startsWith(`${cutIds(cut).llm}:`)) delete graph[key];
+    }
+  }
+  if (count === 1) {
+    delete graph[STREAM];
+    delete graph[START];
+    return ["92"];
+  }
+  const stream = graph[STREAM].inputs;
+  stream.active_extensions = count - 1;
+  stream.filename_prefix = graph["92"].inputs.filename_prefix;
+  for (let index = count; index <= EXTRA_CUTS.length; index++) delete stream[`extension_${index}`];
+  delete graph["92"];
+  const used = EXTRA_CUTS.filter((cut) => cut <= count);
+  for (const cut of used) {
+    graph[cutIds(cut).noise].inputs.noise_seed = graph["817:129"].inputs.noise_seed;
+    convertCut(graph[cutIds(cut).cond], mode, cut === count);
+  }
+  // The end image belongs to the final cut.
+  if (mode === "L2V" || mode === "FL2V") delete graph["817:136"].inputs.last_frame;
+  graph["817:136"]._meta = { ...graph["817:136"]._meta, h3_cuts: {
+    mode, last: cutIds(count).cond,
+    cuts: used.map((cut) => ({ cond: cutIds(cut).cond, preview: cutIds(cut).preview, seconds: cutIds(cut).seconds })),
+  } };
+  return [STREAM];
+}
+
 export function applySettings(graph, settings) {
   for (const [id, values] of Object.entries(settings ?? {})) {
     const node = graph[id];
@@ -114,6 +205,14 @@ export function configureGeneration(control, app) {
       const node = graph.getNodeById(id);
       if (node) node.h3Hidden = batch || mode !== "R2V";
     }
+    if (control.properties.h3_cuts) {
+      for (const cut of EXTRA_CUTS) {
+        for (const id of [950 + cut, 960 + cut, 970 + cut]) {
+          const node = graph.getNodeById(id);
+          if (node) node.h3Hidden = batch || cut > control.properties.h3_cuts.count;
+        }
+      }
+    }
     graph.setDirtyCanvas(true, true);
   };
   const change = (mode) => {
@@ -154,6 +253,18 @@ export function configureGeneration(control, app) {
   }
   modeWidget.callback = change;
   modeWidget.value = config.mode;
+  if (control.properties.h3_cuts) {
+    let cutWidget = widget(control, "カット数");
+    if (!cutWidget) {
+      cutWidget = control.addWidget("combo", "カット数", control.properties.h3_cuts.count, () => {}, { values: [1, 2, 3, 4], serialize: false });
+      cutWidget.h3SceneOnly = true;
+    }
+    cutWidget.callback = (value) => {
+      control.properties.h3_cuts.count = Number(value);
+      refresh();
+    };
+    cutWidget.value = control.properties.h3_cuts.count;
+  }
   refresh();
   control.setSize(control.computeSize());
   if (!generator) return;

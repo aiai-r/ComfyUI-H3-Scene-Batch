@@ -1,89 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { generationPrompt, scenePrompt, applySettings, changedSettings, configureGeneration } from "./generation.js";
+import {
+  generationPrompt, scenePrompt, applySettings, changedSettings, configureGeneration,
+  applyCuts, copyCutReferences, cutIds, cutInstructions, hasCuts,
+} from "./generation.js";
 
 const widget = (node, name) => node.widgets.find((item) => item.name === name);
 const nodeById = (graph, id) => graph.getNodeById(id) ?? graph.getNodeById(Number(id));
 const isLink = (value) => Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "number";
-
-// Cut chaining nodes inside the generation subgraph of the cut workflow.
-const CUT = { context: "817:850", trim: "817:851", load: "817:852", save: "817:853", guider: "817:126" };
-const pad = (value) => String(value).padStart(2, "0");
-
-function contextFrames(graph) {
-  const value = graph[CUT.context]?.inputs.context_length;
-  return Number.isInteger(value) ? value : 39;
-}
-
-function firstCut(graph) {
-  graph[CUT.guider].inputs.conditioning = ["817:136", 0];
-  graph[CUT.trim].inputs.trim_frames = 0;
-  delete graph[CUT.context];
-  delete graph[CUT.load];
-}
-
-function continueCut(graph, contextDir) {
-  if (graph["817:136"].inputs.first_frame) throw new Error("2カット目以降の生成モードは R2V か L2V にしてください。");
-  graph[CUT.load].inputs.context_dir = contextDir;
-}
-
-export async function cutScenePrompt(graph, control) {
-  if (!graph[CUT.save]) return graph;
-  const project = control ? widget(control, "project_dir").value.trim() : "";
-  let draft = { cut_count: 0 };
-  if (control?.properties.h3_cuts && project) {
-    const response = await api.fetchApi("/h3_scene_batch/draft_info", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project_dir: project }),
-    });
-    draft = await response.json();
-    if (!response.ok) throw new Error(draft.error);
-  }
-  graph[CUT.save].inputs.frames = contextFrames(graph);
-  graph[CUT.save].inputs.context_dir = `h3_scene_context/runs/${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  if (!draft.cut_count) {
-    firstCut(graph);
-    return graph;
-  }
-  continueCut(graph, draft.context_dir);
-  const seconds = (contextFrames(graph) / 24).toFixed(2);
-  const note = `CONTINUATION CUT ${draft.cut_count + 1}: This video continues the previous cut directly, without a scene change. ` +
-    `Its first ${seconds} seconds are pinned to the last frames and sound of the previous cut, so start exactly where the previous cut ends: ` +
-    `same subjects, positions, outfits, location, lighting, camera and ongoing sound. Do not re-introduce or re-establish the scene. ` +
-    `The previous cut's final prompt is given only for continuity; write this cut from the user's instructions.\n` +
-    `<previous_cut_prompt>\n${draft.previous_prompt}\n</previous_cut_prompt>\n\n`;
-  for (const [id, key] of [["822:492", "value"], ["822:803", "system_prompt"]]) {
-    const inputs = graph[id]?.inputs;
-    if (typeof inputs?.[key] === "string") inputs[key] = note + inputs[key];
-  }
-  return graph;
-}
-
-function batchCut(graph, loader, saved) {
-  if (!graph[CUT.save]) return [];
-  const cut = saved?.cut_index ?? 0;
-  const count = saved?.cut_count ?? 1;
-  const context = (index) => `h3_scene_context/batch/${saved.scene_id}/cut${pad(index + 1)}`;
-  graph[loader].inputs.cut_index = cut;
-  if (cut === 0) firstCut(graph);
-  else continueCut(graph, context(cut - 1));
-  if (cut === count - 1) {
-    delete graph[CUT.save];
-  } else {
-    graph[CUT.save].inputs.frames = contextFrames(graph);
-    graph[CUT.save].inputs.context_dir = context(cut);
-    return [CUT.save];
-  }
-  if (count === 1) return [];
-  const join = `${loader}:join_cuts`;
-  graph[join] = { class_type: "H3SceneJoinCuts", inputs: {
-    video: graph["92"].inputs.video, cut_prefix: `h3_scenes/${saved.scene_id}/cut`, cut_count: count,
-    cleanup_dir: `h3_scene_context/batch/${saved.scene_id}`,
-  } };
-  graph[`${loader}:save_scene`] = { class_type: "SaveVideo", inputs: {
-    ...graph["92"].inputs, video: [join, 0], filename_prefix: `h3_scenes/${saved.scene_id}`,
-  } };
-  return [`${loader}:save_scene`];
-}
 
 export function batchPrompt(output, control, saved = null) {
   const graph = structuredClone(output);
@@ -111,6 +35,16 @@ export function batchPrompt(output, control, saved = null) {
     for (let index = 0; index < 3; index++) refs[`${group}.${name}_${index}`] = [loader, slot++];
   }
   graph["92"].inputs.filename_prefix = [loader, 12];
+  const extraCuts = saved?.extra_cuts ?? [];
+  if (hasCuts(graph)) {
+    copyCutReferences(graph);
+    extraCuts.forEach((cut, index) => {
+      const ids = cutIds(index + 2);
+      if (!graph[ids.cond]) throw new Error(`カット ${index + 2} の生成部分が見つかりません。`);
+      graph[ids.cond].inputs.prompt = cut.prompt;
+      graph[ids.seconds].inputs.value = cut.duration;
+    });
+  }
   if (saved) {
     graph[loader].inputs.generation_mode = saved.generation_mode;
     generationPrompt(graph, saved.generation_mode);
@@ -120,7 +54,7 @@ export function batchPrompt(output, control, saved = null) {
     }
     applySettings(graph, settings);
   }
-  const roots = ["92", ...batchCut(graph, loader, saved)];
+  const roots = applyCuts(graph, extraCuts.length + 1, saved?.generation_mode ?? "R2V");
   const needed = {};
   function visit(id) {
     if (needed[id]) return;
@@ -190,7 +124,7 @@ app.registerExtension({
           const project = widget(control, "project_dir").value.replace(/[\\/]+$/, "");
           const response = await api.fetchApi("/h3_scene_batch/scene_config", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ manifest_path: project + "/scenes.json", start_at: widget(control, "start_at").value, cut_index: control.h3BatchQueue?.cut ?? 0 }),
+            body: JSON.stringify({ manifest_path: project + "/scenes.json", start_at: widget(control, "start_at").value }),
           });
           saved = await response.json();
           if (!response.ok) throw new Error(saved.error);
@@ -198,8 +132,15 @@ app.registerExtension({
         result.output = batchPrompt(result.output, control, saved);
       } else {
         const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.mode === 0 && node.properties.h3_multimode);
-        if (control) result.output = scenePrompt(result.output, control.properties.h3_multimode.mode);
-        result.output = await cutScenePrompt(result.output, control);
+        if (control) {
+          const mode = control.properties.h3_multimode.mode;
+          const count = control.properties.h3_cuts?.count ?? 1;
+          result.output = scenePrompt(result.output, mode);
+          cutInstructions(result.output, mode, count);
+          applyCuts(result.output, count, mode);
+        } else if (hasCuts(result.output)) {
+          applyCuts(result.output, 1, "R2V");
+        }
       }
       return result;
     };

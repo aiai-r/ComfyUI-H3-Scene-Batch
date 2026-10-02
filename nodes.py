@@ -16,7 +16,6 @@ from server import PromptServer
 from .media import MEDIA_INPUTS, capture_media, copy_media, expand_media, is_link
 from .duplicates import duplicate_scenes
 from .modes import MODES, capture_settings, scene_mode
-from .cuts import H3SceneCutContextLoad, H3SceneCutContextSave, H3SceneJoinCuts, adopt_cut, discard_draft, draft_dir, read_draft
 
 
 def validate_scene_numbers(seed, duration):
@@ -41,12 +40,20 @@ def resolve_number(graph, value):
     return value
 
 
-def validate_cut(prompt, image_paths, seed, duration, generation_mode):
+def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None, generation_mode="R2V", generation_settings=None, extra_cuts=None):
     validate_scene_numbers(seed, duration)
+    for cut in extra_cuts or []:
+        validate_scene_numbers(seed, cut["duration"])
+        if not cut["prompt"].strip():
+            raise ValueError("Every cut needs a finalized H3 prompt.")
     if generation_mode not in MODES:
         raise ValueError(f"Unsupported H3 mode: {generation_mode}")
+    if not project_dir.strip():
+        raise ValueError("Set a project directory.")
     if not prompt.strip():
         raise ValueError("Enter the finalized H3 prompt.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", scene_id):
+        raise ValueError("Scene ID must contain only letters, numbers, _ or -.")
     sources = []
     for line in image_paths.splitlines():
         if not line.strip():
@@ -60,11 +67,16 @@ def validate_cut(prompt, image_paths, seed, duration, generation_mode):
     for source in sources:
         if not source.is_file():
             raise FileNotFoundError(source)
-    return sources
 
+    project = Path(project_dir).expanduser().resolve()
+    manifest = project / "scenes.json"
+    scenes = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else []
+    if not isinstance(scenes, list):
+        raise ValueError("scenes.json must contain a list.")
+    if any(scene.get("id") == scene_id for scene in scenes):
+        raise ValueError(f"Scene {scene_id} is already saved.")
 
-def store_cut(project, folder, sources, prompt, seed, duration, media, generation_mode, generation_settings):
-    target_dir = project / "images" / folder
+    target_dir = project / "images" / scene_id
     target_dir.mkdir(parents=True, exist_ok=True)
     images = []
     for index, source in enumerate(sources, 1):
@@ -73,55 +85,19 @@ def store_cut(project, folder, sources, prompt, seed, duration, media, generatio
         shutil.copy2(source, target)
         images.append(target.relative_to(project / "images").as_posix())
 
-    scene = {"prompt": prompt, "images": images, "seed": seed, "duration": duration}
+    scene = {"id": scene_id, "prompt": prompt, "images": images, "seed": seed, "duration": duration}
     scene["generation_mode"] = generation_mode
     if generation_settings is not None:
         scene["generation_settings"] = generation_settings
     if media is not None:
-        scene["media"] = copy_media(media, project / "images", folder)
-    return scene
-
-
-def open_manifest(project_dir, scene_id):
-    if not project_dir.strip():
-        raise ValueError("Set a project directory.")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", scene_id):
-        raise ValueError("Scene ID must contain only letters, numbers, _ or -.")
-    project = Path(project_dir).expanduser().resolve()
-    manifest = project / "scenes.json"
-    scenes = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else []
-    if not isinstance(scenes, list):
-        raise ValueError("scenes.json must contain a list.")
-    if any(scene.get("id") == scene_id for scene in scenes):
-        raise ValueError(f"Scene {scene_id} is already saved.")
-    return project, manifest, scenes
-
-
-def write_manifest(manifest, scenes):
+        scene["media"] = copy_media(media, project / "images", scene_id)
+    if extra_cuts:
+        scene["extra_cuts"] = [{"prompt": cut["prompt"], "duration": cut["duration"]} for cut in extra_cuts]
+    scenes.append(scene)
     temporary = manifest.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(scenes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, manifest)
     return str(manifest)
-
-
-def save_scene(project_dir, scene_id, prompt, image_paths, seed, duration, media=None, generation_mode="R2V", generation_settings=None):
-    sources = validate_cut(prompt, image_paths, seed, duration, generation_mode)
-    project, manifest, scenes = open_manifest(project_dir, scene_id)
-    scene = store_cut(project, scene_id, sources, prompt, seed, duration, media, generation_mode, generation_settings)
-    scenes.append({"id": scene_id, **scene})
-    return write_manifest(manifest, scenes)
-
-
-def save_cut_scene(project_dir, scene_id, cuts):
-    checked = [validate_cut(cut["prompt"], "\n".join(cut["image_paths"]), cut["seed"], cut["duration"], cut["generation_mode"]) for cut in cuts]
-    project, manifest, scenes = open_manifest(project_dir, scene_id)
-    saved = [
-        store_cut(project, f"{scene_id}/cut{index:02d}", sources, cut["prompt"], cut["seed"], cut["duration"],
-                  cut["media"], cut["generation_mode"], cut.get("generation_settings"))
-        for index, (cut, sources) in enumerate(zip(cuts, checked), 1)
-    ]
-    scenes.append({"id": scene_id, "cuts": saved})
-    return write_manifest(manifest, scenes)
 
 
 def next_scene_id(project_dir):
@@ -142,14 +118,17 @@ def latest_scene(history):
         references = graph["817:136"]["inputs"]
         if graph["224"]["inputs"]["source"] != references["prompt"]:
             raise ValueError("The preview prompt does not match the generated video prompt.")
-        mode = scene_mode(graph["817:136"])
+        cuts = graph["817:136"].get("_meta", {}).get("h3_cuts")
+        mode = cuts["mode"] if cuts else scene_mode(graph["817:136"])
+        # In a multi-cut run the last frame belongs to the final cut.
+        holders = {"last_frame": graph[cuts["last"]]["inputs"]} if cuts else {}
         names = [f"ref_images.ref_image_{i}" for i in range(9)] if mode == "R2V" else {
             "I2V": ["first_frame"], "L2V": ["last_frame"], "FL2V": ["first_frame", "last_frame"],
         }[mode]
         image_paths = []
         missing_image = False
         for name in names:
-            link = references.get(name)
+            link = holders.get(name, references).get(name)
             if link is None:
                 missing_image = True
                 continue
@@ -165,7 +144,14 @@ def latest_scene(history):
         seed = resolve_number(graph, graph["817:129"]["inputs"]["noise_seed"])
         duration = resolve_number(graph, graph["817:819"]["inputs"]["value"])
         validate_scene_numbers(seed, duration)
+        extra_cuts = []
+        for cut in (cuts or {}).get("cuts", []):
+            text = entry.get("outputs", {}).get(cut["preview"], {}).get("text", [])
+            if not text or graph[cut["preview"]]["inputs"]["source"] != graph[cut["cond"]]["inputs"]["prompt"]:
+                raise ValueError("A cut prompt preview does not match the generated video prompt.")
+            extra_cuts.append({"prompt": text[0], "duration": resolve_number(graph, graph[cut["seconds"]]["inputs"]["value"])})
         return {
+            "extra_cuts": extra_cuts,
             "generation_mode": mode,
             "generation_settings": capture_settings(graph) if graph["817:136"].get("_meta", {}).get("h3_multimode") else None,
             "prompt_id": prompt_id,
@@ -174,8 +160,6 @@ def latest_scene(history):
             "seed": seed,
             "duration": duration,
             "media": capture_media(graph, references),
-            "context_save": entry.get("outputs", {}).get("817:853", {}).get("context_dir", [None])[0],
-            "context_load": graph.get("817:852", {}).get("inputs", {}).get("context_dir"),
         }
     raise ValueError("No completed run of this H3 workflow was found in recent history.")
 
@@ -184,19 +168,8 @@ def latest_scene(history):
 async def save_latest(request):
     data = await request.json()
     try:
-        draft = read_draft(data["project_dir"])["cuts"]
-        if len(draft) > 1:
-            scene_id = next_scene_id(data["project_dir"])
-            path = save_cut_scene(data["project_dir"], scene_id, draft)
-            discard_draft(data["project_dir"])
-            return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": draft[-1]["prompt_id"], "cuts": len(draft),
-                                      "images": sum(len(cut["image_paths"]) for cut in draft),
-                                      "media": sum(len(cut["media"]["outputs"]) for cut in draft)})
-        if draft:
-            scene = draft[0]
-        else:
-            history = PromptServer.instance.prompt_queue.get_history(max_items=20)
-            scene = latest_scene(history)
+        history = PromptServer.instance.prompt_queue.get_history(max_items=20)
+        scene = latest_scene(history)
         scene_id = next_scene_id(data["project_dir"])
         fingerprint, duplicates = duplicate_scenes(data["project_dir"], scene)
         confirmation = data.get("confirm_fingerprint")
@@ -207,48 +180,11 @@ async def save_latest(request):
         path = save_scene(
             data["project_dir"], scene_id, scene["prompt"],
             "\n".join(scene["image_paths"]), scene["seed"], scene["duration"],
-            scene["media"], scene.get("generation_mode", "R2V"), scene.get("generation_settings"),
+            scene["media"], scene.get("generation_mode", "R2V"), scene.get("generation_settings"), scene["extra_cuts"],
         )
-        if draft:
-            discard_draft(data["project_dir"])
     except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "cuts": 1, "images": len(scene["image_paths"]), "media": len(scene["media"]["outputs"])})
-
-
-@PromptServer.instance.routes.post("/h3_scene_batch/adopt_latest")
-async def adopt_latest(request):
-    data = await request.json()
-    try:
-        history = PromptServer.instance.prompt_queue.get_history(max_items=20)
-        count = adopt_cut(data["project_dir"], latest_scene(history))
-    except (KeyError, TypeError, ValueError, FileNotFoundError, OSError) as error:
-        return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"cut_count": count})
-
-
-@PromptServer.instance.routes.post("/h3_scene_batch/draft_info")
-async def draft_info(request):
-    data = await request.json()
-    try:
-        cuts = read_draft(data["project_dir"])["cuts"]
-        info = {"cut_count": len(cuts), "context_dir": "", "previous_prompt": ""}
-        if cuts:
-            info["context_dir"] = str(draft_dir(data["project_dir"]) / cuts[-1]["context"])
-            info["previous_prompt"] = cuts[-1]["prompt"]
-    except (KeyError, TypeError, ValueError, OSError) as error:
-        return web.json_response({"error": str(error)}, status=400)
-    return web.json_response(info)
-
-
-@PromptServer.instance.routes.post("/h3_scene_batch/discard_draft")
-async def discard(request):
-    data = await request.json()
-    try:
-        discard_draft(data["project_dir"])
-    except (KeyError, TypeError, ValueError, OSError) as error:
-        return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({})
+    return web.json_response({"path": path, "scene_id": scene_id, "prompt_id": scene["prompt_id"], "cuts": len(scene["extra_cuts"]) + 1, "images": len(scene["image_paths"]), "media": len(scene["media"]["outputs"])})
 
 
 @PromptServer.instance.routes.post("/h3_scene_batch/open_folder")
@@ -289,16 +225,12 @@ async def scene_config(request):
         index = data["start_at"]
         if type(index) is not int or index < 0 or index >= len(scenes):
             raise ValueError("Saved scene index is out of range.")
-        cuts = scenes[index].get("cuts") or [scenes[index]]
-        cut_index = data.get("cut_index", 0)
-        if type(cut_index) is not int or cut_index < 0 or cut_index >= len(cuts):
-            raise ValueError("Saved cut index is out of range.")
-        cut = cuts[cut_index]
-        mode = cut.get("generation_mode", "R2V")
+        scene = scenes[index]
+        mode = scene.get("generation_mode", "R2V")
         if mode not in MODES:
             raise ValueError(f"Unsupported H3 mode: {mode}")
-        return web.json_response({"generation_mode": mode, "generation_settings": cut.get("generation_settings", {}),
-                                  "scene_id": scenes[index]["id"], "cut_index": cut_index, "cut_count": len(cuts)})
+        return web.json_response({"generation_mode": mode, "generation_settings": scene.get("generation_settings", {}),
+                                  "extra_cuts": scene.get("extra_cuts", [])})
     except (KeyError, TypeError, ValueError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
 
@@ -375,8 +307,7 @@ class H3SceneBatchLoad:
             "image_root": ("STRING", {"default": ""}),
             "start_at": ("INT", {"default": 0, "min": 0}),
             "auto_queue": ("BOOLEAN", {"default": True}),
-        }, "optional": {"generation_mode": (list(MODES), {"default": "R2V", "forceInput": True}),
-                        "cut_index": ("INT", {"default": 0, "min": 0, "forceInput": True})}}
+        }, "optional": {"generation_mode": (list(MODES), {"default": "R2V", "forceInput": True})}}
 
     RETURN_TYPES = ("STRING", "INT", "FLOAT") + ("STRING",) * 10 + tuple(kind for _, kind in MEDIA_INPUTS)
     RETURN_NAMES = ("prompt", "seed", "duration") + tuple(f"image_path_{i}" for i in range(1, 10)) + ("filename_prefix",) + tuple(name.split(".")[1] for name, _ in MEDIA_INPUTS)
@@ -387,18 +318,14 @@ class H3SceneBatchLoad:
     def IS_CHANGED(cls, manifest_path, **kwargs):
         return os.path.getmtime(manifest_path)
 
-    def load(self, manifest_path, image_root, start_at, auto_queue, generation_mode="R2V", cut_index=0):
+    def load(self, manifest_path, image_root, start_at, auto_queue, generation_mode="R2V"):
         scenes = json.loads(Path(manifest_path).expanduser().read_text(encoding="utf-8"))
         if not scenes:
             raise ValueError("No saved scenes found.")
         if start_at >= len(scenes):
             raise ValueError(f"Scene index {start_at} is beyond the {len(scenes)} saved scenes.")
         root = Path(image_root).expanduser().resolve()
-        cuts = scenes[start_at].get("cuts") or [scenes[start_at]]
-        if cut_index >= len(cuts):
-            raise ValueError(f"Cut index {cut_index} is beyond the {len(cuts)} saved cuts.")
-        scene = {**cuts[cut_index], "id": scenes[start_at]["id"]}
-        prefix = f"h3_scenes/{scene['id']}" if len(cuts) == 1 else f"h3_scenes/{scene['id']}/cut{cut_index + 1:02d}"
+        scene = scenes[start_at]
         if scene.get("generation_mode", "R2V") != generation_mode:
             raise ValueError("Scene mode does not match the queued graph. Use the multimode workflow and queue again.")
         seed = 4 if is_link(scene["seed"]) else scene["seed"]
@@ -420,10 +347,9 @@ class H3SceneBatchLoad:
                 paths.append("")
         expanded, media = expand_media(scene.get("media", {}), root)
         return {
-            "result": (scene["prompt"], seed, scene["duration"], *paths, prefix, *media),
+            "result": (scene["prompt"], seed, scene["duration"], *paths, f"h3_scenes/{scene['id']}", *media),
             "expand": expanded,
             "ui": {"start_at": [start_at], "scene_count": [len(scenes)], "scene_id": [scene["id"]],
-                   "cut_index": [cut_index], "cut_count": [len(cuts)],
                    "manifest_path": [manifest_path], "image_root": [image_root]},
         }
 
@@ -434,9 +360,6 @@ NODE_CLASS_MAPPINGS = {
     "H3SceneBatchLoad": H3SceneBatchLoad,
     "H3SceneAudioPath": H3SceneAudioPath,
     "H3SceneVideoPath": H3SceneVideoPath,
-    "H3SceneCutContextSave": H3SceneCutContextSave,
-    "H3SceneCutContextLoad": H3SceneCutContextLoad,
-    "H3SceneJoinCuts": H3SceneJoinCuts,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
     "H3SceneCapture": "H3 Scene Capture",
@@ -444,7 +367,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "H3SceneBatchLoad": "H3 Scene Batch Load",
     "H3SceneAudioPath": "H3 Scene Audio Path",
     "H3SceneVideoPath": "H3 Scene Video Path",
-    "H3SceneCutContextSave": "H3 Scene Cut Context Save",
-    "H3SceneCutContextLoad": "H3 Scene Cut Context Load",
-    "H3SceneJoinCuts": "H3 Scene Join Cuts",
 }

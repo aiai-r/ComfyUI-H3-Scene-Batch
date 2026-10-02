@@ -36,6 +36,7 @@ def scene_fingerprint(scene, root=None):
         "duration": float(scene["duration"]),
         "images": [file_hash(path) for path in scene["images"]],
         "media": {name: reference(link) for name, link in media.get("outputs", {}).items()},
+        "extra_cuts": [[cut["prompt"], float(cut["duration"])] for cut in scene.get("extra_cuts") or []],
     }
     return hashlib.sha256(json.dumps(content, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
@@ -48,6 +49,8 @@ def duplicate_scenes(project_dir, scene):
     matches = []
     for saved in scenes:
         if any(saved[key] != scene[key] for key in ("prompt", "seed", "duration")):
+            continue
+        if saved.get("extra_cuts", []) != (scene.get("extra_cuts") or []):
             continue
         try:
             saved_fingerprint = scene_fingerprint(saved, project / "images")
