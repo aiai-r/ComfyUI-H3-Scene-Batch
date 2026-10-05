@@ -25,6 +25,7 @@ export function updateCut(original, fields) {
       if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("生成秒数は正の数を指定してください。");
       cut.duration_seconds = seconds;
       delete cut.length;
+      delete cut.frames;
     }
   }
   if (!fields.seed.trim()) delete cut.seed;

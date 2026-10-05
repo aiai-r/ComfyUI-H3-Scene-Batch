@@ -4,6 +4,7 @@ from pathlib import Path
 import folder_paths
 import nodes
 from comfy_execution.graph_utils import GraphBuilder
+from .director import reference_path, active_assets
 
 
 MODES = ("R2V", "T2V", "I2V", "L2V", "FL2V")
@@ -26,19 +27,14 @@ def read_scene(text):
     return scene
 
 
-def active_assets(scene):
-    roles = {"R2V": {"reference"}, "T2V": set(), "I2V": {"first"}, "L2V": {"last"}, "FL2V": {"first", "last"}}
-    return [a for a in scene["assets"] if a.get("enabled", True) and a.get("role", "reference") in roles[scene["mode"]]]
-
-
 def input_file(filename):
     if not isinstance(filename, str) or not filename.strip():
         raise ValueError("Choose a scene reference file.")
+    path = reference_path(filename)
     root = Path(folder_paths.get_input_directory()).resolve()
-    path = Path(folder_paths.get_annotated_filepath(filename)).resolve()
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError(f"Missing reference or file outside ComfyUI input: {filename}")
-    return path.relative_to(root).as_posix()
+    if path.is_relative_to(root):
+        return path.relative_to(root).as_posix()
+    return path.relative_to(Path(folder_paths.get_output_directory()).resolve()).as_posix() + " [output]"
 
 
 class H3SceneConditioning:

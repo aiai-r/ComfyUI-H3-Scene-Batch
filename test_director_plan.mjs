@@ -10,6 +10,7 @@ assert.deepEqual(updateCut(original, fields), original);
 const changed = updateCut(original, { ...fields, seconds: "8.5", prompt: "Changed action." });
 assert.equal(changed.duration_seconds, 8.5);
 assert.equal(changed.length, undefined);
+assert.equal(updateCut({ ...original, frames: 362 }, { ...fields, seconds: "8.5" }).frames, undefined);
 assert.equal(changed.seed, "18446744073709551615");
 assert.deepEqual(changed.custom, original.custom);
 assert.equal(original.length, 362, "Cancel can discard edits without mutating the source");

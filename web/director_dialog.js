@@ -5,7 +5,7 @@ export function openDraftDialog(node, getPlan, setPlan, getScene) {
   const baseline = structuredClone(getPlan());
   const scene = structuredClone(getScene());
   const config = node.properties.h3_llm;
-  if (!config) throw new Error("段階2の開発workflowを開いてください。LLM設定がありません。");
+  if (!config) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
   const dialog = document.createElement("dialog");
   dialog.style.cssText = "width:min(1000px,90vw);max-height:88vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:20px;border:1px solid #777";
   const heading = document.createElement("h2");

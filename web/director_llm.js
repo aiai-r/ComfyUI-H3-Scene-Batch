@@ -20,7 +20,7 @@ export function referenceDescriptions(scene) {
 }
 
 export function draftGraph(config, scene, plan, action, instruction, story, selected) {
-  if (!config?.loader || !config?.prompt || !config?.story) throw new Error("開発workflowのLLM設定がありません。段階2のworkflowを開いてください。");
+  if (!config?.loader || !config?.prompt || !config?.story) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
   if (action === "revise" && !Number.isInteger(selected)) throw new Error("修正するカットを選択してください。");
   const stage = action === "story" ? config.story : config.prompt;
   const system = [
