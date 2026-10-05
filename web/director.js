@@ -1,5 +1,87 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import { readPlan, updateCut } from "./director_plan.js";
+import { sceneAssets, referenceDescriptions } from "./director_llm.js";
+import { openDraftDialog } from "./director_dialog.js";
+
+function attachSceneEditor(node, parent, report) {
+  const widget = node.widgets.find(w => w.name === "scene_json");
+  if (!widget) return null;
+  widget.hidden = true; widget.options = { ...widget.options, hidden: true }; widget.computeSize = () => [0, -4];
+  if (widget.element) widget.element.hidden = true;
+  const root = document.createElement("fieldset");
+  const legend = document.createElement("legend"); legend.textContent = "シーンのモード・参照素材"; root.append(legend); parent.append(root);
+  const body = document.createElement("div"); body.style.cssText = "max-height:320px;overflow:auto"; root.append(body);
+  let scene;
+  function save() { widget.value = JSON.stringify(scene); node.graph?.change(); node.setDirtyCanvas(true, true); }
+  function button(parent, title, action) {
+    const element = document.createElement("button"); element.type = "button"; element.textContent = title;
+    element.onclick = async () => { try { await action(); report(""); } catch (e) { report(e.message); } };
+    parent.append(element); return element;
+  }
+  function select(parent, title, values, current, change) {
+    const label = document.createElement("label"); label.textContent = title + " ";
+    const element = document.createElement("select");
+    for (const [value, title] of values) { const option = document.createElement("option"); option.value = value; option.textContent = title; element.append(option); }
+    element.value = current; element.onchange = () => { change(element.value); save(); render(); };
+    label.append(element); parent.append(label);
+  }
+  function render() {
+    body.replaceChildren();
+    select(body, "生成モード", ["R2V", "T2V", "I2V", "L2V", "FL2V"].map(v => [v, v]), scene.mode, v => { scene.mode = v; });
+    select(body, "R2V画像サイズ", [["match", "match"], ["max", "max"]], scene.ref_image_size ?? "match", v => { scene.ref_image_size = v; });
+    const active = sceneAssets(scene);
+    const references = referenceDescriptions(scene);
+    for (const [index, asset] of scene.assets.entries()) {
+      const row = document.createElement("fieldset"); row.style.marginTop = "8px";
+      const title = document.createElement("legend"); title.textContent = `${index + 1}. ${asset.kind} ${active.includes(asset) ? references.filter(r => r.asset_index === index).map(r => r.label).join(" / ") : "このモードでは不使用"}`; row.append(title);
+      const enabledLabel = document.createElement("label");
+      const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = asset.enabled !== false;
+      enabled.onchange = () => { asset.enabled = enabled.checked; save(); render(); };
+      enabledLabel.append(enabled, " 有効 "); row.append(enabledLabel);
+      if (asset.kind === "image") select(row, "役割", [["reference", "R2V参照"], ["first", "始点画像"], ["last", "終点画像"]], asset.role ?? "reference", v => { asset.role = v; });
+      const filenameLabel = document.createElement("label"); filenameLabel.textContent = "input内のファイル ";
+      const filename = document.createElement("input"); filename.value = asset.file ?? ""; filename.style.width = "95%";
+      filename.onchange = () => { asset.file = filename.value; save(); render(); }; filenameLabel.append(filename); row.append(filenameLabel);
+      const file = document.createElement("input"); file.type = "file"; file.accept = `${asset.kind}/*`; file.hidden = true;
+      file.onchange = async () => {
+        try {
+          if (!file.files[0]) return;
+          const form = new FormData(); form.append("image", file.files[0]); form.append("type", "input"); form.append("subfolder", "h3_scene_director");
+          const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
+          if (!response.ok) throw new Error("参照素材をアップロードできませんでした。");
+          const data = await response.json();
+          if (!scene.assets.includes(asset)) return;
+          asset.file = [data.subfolder, data.name].filter(Boolean).join("/"); save(); render(); report("");
+        } catch (e) { report(e.message); }
+      };
+      row.append(file); button(row, "ファイルを選択", () => file.click());
+      button(row, "素材を削除", () => { scene.assets.splice(index, 1); save(); render(); });
+      if (asset.kind === "video") {
+        const label = document.createElement("label"); const audio = document.createElement("input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false;
+        audio.onchange = () => { asset.use_audio = audio.checked; save(); render(); }; label.append(audio, " 動画の音声も参照"); row.append(label);
+      }
+      if (asset.file) {
+        const preview = document.createElement(asset.kind === "image" ? "img" : asset.kind);
+        const path = asset.file.replaceAll("\\", "/").replace(/ \[input\]$/, ""); const split = path.lastIndexOf("/");
+        preview.src = api.apiURL(`/view?${new URLSearchParams({ filename: path.slice(split + 1), subfolder: path.slice(0, Math.max(0, split)), type: "input" })}`);
+        preview.style.cssText = "display:block;max-width:100%;max-height:160px;margin-top:6px";
+        if (asset.kind === "image") preview.alt = `参照画像 ${index + 1}`;
+        else { preview.controls = true; preview.preload = "metadata"; }
+        row.append(preview);
+      }
+      const label = document.createElement("label"); label.textContent = "素材の役割・内容メモ（LLMへ渡す）";
+      const note = document.createElement("textarea"); note.rows = 2; note.value = asset.note ?? ""; note.style.cssText = "display:block;width:100%;box-sizing:border-box";
+      note.oninput = () => { asset.note = note.value; save(); }; label.append(note); row.append(label); body.append(row);
+    }
+    for (const [kind, label] of [["image", "画像"], ["audio", "音声"], ["video", "動画"]]) button(body, `${label}を追加`, () => {
+      scene.assets.push({ kind, role: kind === "image" && scene.mode === "I2V" ? "first" : kind === "image" && scene.mode === "L2V" ? "last" : "reference", file: "", enabled: true, note: "" }); save(); render();
+    });
+  }
+  function restore() { scene = JSON.parse(widget.value); sceneAssets(scene); render(); }
+  restore();
+  return { restore, get: () => structuredClone(scene) };
+}
 
 function attachCutEditor(node) {
   const widget = node.widgets.find((item) => item.name === "plan_json");
@@ -18,6 +100,8 @@ function attachCutEditor(node) {
   const actions = document.createElement("div");
   actions.style.cssText = "display:flex;gap:12px;flex-wrap:wrap;margin-top:16px";
   editor.append(help, error, body, actions);
+  const mediaContainer = document.createElement("div"); editor.insertBefore(mediaContainer, body);
+  const media = attachSceneEditor(node, mediaContainer, message => { error.textContent = message; });
   let plan;
   let collect;
 
@@ -107,6 +191,10 @@ function attachCutEditor(node) {
   });
   editor.append(file);
   button(actions, "Plan JSONを読み込む", () => file.click());
+  if (media) button(actions, "LLMでPromptを作成・修正", () => {
+    collect();
+    openDraftDialog(node, () => { collect(); return plan; }, value => { plan = value; save(); render(); }, media.get);
+  });
   node.addDOMWidget("cut_editor", "custom", editor, {
     serialize: false, hideOnZoom: false, getMinHeight: () => 360, getHeight: () => 600,
   });
@@ -118,6 +206,7 @@ function attachCutEditor(node) {
   const configured = node.onConfigure;
   node.onConfigure = function () {
     const result = configured?.apply(this, arguments);
+    if (media) attempt(media.restore);
     restore();
     return result;
   };

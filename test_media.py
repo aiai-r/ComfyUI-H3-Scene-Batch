@@ -23,6 +23,7 @@ import folder_paths
 comfy.cli_args.args.cpu = True
 
 PACKAGE = Path(__file__).resolve().parent
+sys.path.insert(0, str(PACKAGE.parents[1]))  # Resolve ComfyUI's public nodes module, not this package's nodes.py.
 spec = importlib.util.spec_from_file_location("h3_scene_test", PACKAGE / "__init__.py", submodule_search_locations=[str(PACKAGE)])
 package = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = package

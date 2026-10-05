@@ -34,15 +34,17 @@ class H3SceneDirector:
             "height": ("INT", {"forceInput": True}),
             "steps": ("INT", {"forceInput": True}),
             "base_seed": ("INT", {"forceInput": True}),
+        }, "optional": {
+            "scene_json": ("STRING", {"default": '{"mode":"R2V","assets":[],"ref_image_size":"match"}', "multiline": True, "dynamicPrompts": False}),
         }}
 
-    RETURN_TYPES = ("H3_CHAIN_PLAN", "STRING")
-    RETURN_NAMES = ("plan", "summary")
+    RETURN_TYPES = ("H3_CHAIN_PLAN", "STRING", "H3_SCENE")
+    RETURN_NAMES = ("plan", "summary", "scene")
     FUNCTION = "build"
     CATEGORY = "H3 Scene Batch"
-    DESCRIPTION = "R2V development path: edit one scene's cuts, then render the full scene without a review gate. No LLM or adopted-scene save yet."
+    DESCRIPTION = "Edit references and cuts for one independent scene. Draft prompts in the LLM dialog, then render from finalized prompts."
 
-    def build(self, run_name, plan_json, width, height, steps, base_seed):
+    def build(self, run_name, plan_json, width, height, steps, base_seed, scene_json='{"mode":"R2V","assets":[],"ref_image_size":"match"}'):
         graph = GraphBuilder()
         profile = graph.node("MiniMaxH3GenerationProfile",
                              scene_continuity="Hard picture + smooth audio", audio_profile="Generate audio")
@@ -51,4 +53,4 @@ class H3SceneDirector:
                           run_name=run_name, generation_fingerprint="", width=width, height=height,
                           encode_mode="video", crop="disabled", default_duration_seconds=15.0,
                           default_steps=steps, base_seed=base_seed, segment_crf=18, video_blend_frames=0)
-        return {"result": (plan.out(0), plan.out(1)), "expand": graph.finalize()}
+        return {"result": (plan.out(0), plan.out(1), json.loads(scene_json)), "expand": graph.finalize()}
