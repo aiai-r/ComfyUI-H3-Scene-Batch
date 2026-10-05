@@ -234,7 +234,7 @@ class SceneMediaTests(unittest.TestCase):
     def test_duplicate_confirmation_before_writing(self):
         project = self.root / "duplicates"
         scene = {"prompt_id": "run1", "prompt": "Landscape", "seed": 7, "duration": 2,
-                 "image_paths": [str(self.audio)], "media": {"nodes": {}, "outputs": {}}}
+                 "image_paths": [str(self.audio)], "media": {"nodes": {}, "outputs": {}}, "extra_cuts": []}
         instance = nodes.PromptServer.instance
         with patch.object(instance, "prompt_queue", create=True), patch.object(nodes, "latest_scene", return_value=scene):
             def save(**fields):

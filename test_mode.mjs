@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 let extension;
 let prompt;
+globalThis.sceneModeTestApi = new EventTarget();
 const app = globalThis.sceneModeTestApp = {
   graph: { _nodes: [] },
   registerExtension(value) { extension = value; },
