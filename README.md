@@ -29,8 +29,9 @@
 ## Scene Director 開発版（段階1・R2V）
 
 `video_minimax_h3_scene_director_dev.json` は、既存ワークフローを複製して作る試作版です。
-**H3 Scene Director** の「カットを編集」で共通Promptと各カットのPrompt・生成秒数・seedを編集します。
-Context-Loopの `prompt_prefix` / `shots` JSONも読み込めます。読み込みは編集画面内への置き換えで、「適用」までワークフローに反映されません。
+**H3 Scene Director** のノード上で共通Promptと各カットのPrompt・生成秒数・seedを直接編集します。入力はそのままPlanへ反映され、適用ボタンは不要です。
+Context-Loopの `prompt_prefix` / `shots` JSONも読み込めます。置き換えの確認後、ノードの入力へ反映されます。
+通常のPrompt入力はノード上、今後追加するLLM生成・修正操作はモーダルに分けます。
 カットを増やしてもLLM・サンプラーノードの複製は不要です。LLM呼び出しはまだありません。
 
 生成には、インストール済みの **ComfyUI-MiniMaxH3-Context-Loop** の公開ノードを使います。
@@ -41,7 +42,7 @@ Context-Loopの `prompt_prefix` / `shots` JSONも読み込めます。読み込�
 ### 試し方
 
 1. ComfyUIを再起動し、ブラウザを再読み込みして開発用JSONを開きます。
-2. **H3 Scene Director #1200** の「カットを編集」でPrompt等を入力し、「適用」を押します。初期値は中立的な2カットのサンプルです。
+2. **H3 Scene Director #1200** のノード上でPrompt等を入力します。カット欄はノード内をスクロールして編集できます。初期値は中立的な2カットのサンプルです。
 3. 参照画像・音声を確認し、`run_name` を試作ごとに区別できる名前にして、通常の実行ボタンで生成します。カットごとの承認待ちはありません。
 4. 完成動画は `output/h3_chains/<run_name>/final/` に保存され、**MiniMax H3 Context Loop Assemble #1207** に表示されます。**Preview Any #1208** は実行Planの概要、#1209は完成ファイルのパスです。
 
