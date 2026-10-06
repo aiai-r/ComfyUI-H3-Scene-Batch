@@ -1,8 +1,8 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { readPlan, updateCut } from "./director_plan.js";
-import { sceneAssets, referenceDescriptions } from "./director_llm.js";
-import { openDraftDialog } from "./director_dialog.js";
+import { sceneAssets, referenceDescriptions, applyDraft } from "./director_llm.js";
+import { DirectorLLM, openLLMSettings } from "./director_dialog.js";
 import { DirectorQueue, projectRequest } from "./director_queue.js";
 
 const stylesheet = document.createElement("link");
@@ -57,12 +57,15 @@ function attachDirector(node) {
   const status = element(root, "p", "status muted"); status.setAttribute("role", "status");
   const error = element(root, "p", "status"); error.setAttribute("role", "alert");
   const toolbar = element(root, "div", "toolbar row");
-  const draft = button(toolbar, "LLMで作成・修正", () => { collect(); openDraftDialog(node, () => { collect(); return plan; }, value => { plan = value; save(); render(); }, () => structuredClone(scene)); });
+  const draft = button(toolbar, "LLM設定", () => { collect(); openLLMSettings(node); });
   const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
-  button(toolbar, "中止", () => queue.project || queue.busy || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
+  button(toolbar, "中止", () => llmBusy ? llm.stop() : queue.project || queue.busy || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
   let plan, scene, cut = 0, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
   let uploading = false, trackScroll = 0, pastedPlan = "";
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
+  const llm = new DirectorLLM(node, message => { status.textContent = message; });
+  let llmBusy = false;
+  const pendingDrafts = new Map();
 
   function element(parent, tag, className = "", text = "") { const e = document.createElement(tag); e.className = className; e.textContent = text; parent.append(e); return e; }
   function report(e) { error.textContent = e.message ?? String(e); }
@@ -119,10 +122,12 @@ function attachDirector(node) {
     arrangeAssets(); save(); render();
   }
   root.onpaste = event => {
+    if (llmBusy) { event.preventDefault(); event.stopPropagation(); return; }
     if (/INPUT|TEXTAREA/.test(event.target.tagName) || !event.clipboardData.files.length) return;
     event.preventDefault(); event.stopPropagation(); return upload([...event.clipboardData.files], selectedLane).catch(report);
   };
   root.onkeydown = event => {
+    if (llmBusy) return;
     if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || inLibrary) return;
     const asset = scene.assets[selectedAsset];
     if ((event.key === "Delete" || event.key === "Backspace") && asset && !locked(asset.kind, asset.slot)) {
@@ -139,6 +144,74 @@ function attachDirector(node) {
     generate.disabled = true; draft.disabled = true; project.disabled = true;
     try { return await action(); } finally { generate.disabled = false; draft.disabled = false; project.disabled = false; }
   }
+  async function llmTask(action) {
+    if (llmBusy || queue.busy || uploading) throw new Error("実行中の処理が終わるまでお待ちください。");
+    collect(); save(); llmBusy = true; llm.cancelled = false;
+    editor.inert = true; tabs.inert = true; root.dataset.llmBusy = "true";
+    try { await busy(action); }
+    finally { llmBusy = false; editor.inert = false; tabs.inert = false; root.dataset.llmBusy = "false"; render(); }
+  }
+  function writingState() {
+    const state = node.properties.h3_draft ??= {};
+    state.instructions ??= { all: state.instruction ?? "" };
+    state.stories ??= { all: state.story ?? "" };
+    state.previous ??= {};
+    delete state.instruction; delete state.story; delete state.storyOn;
+    return state;
+  }
+  function renderWriting(parent, selected) {
+    const scope = selected === null ? "all" : `cut:${plan.shots[selected].id ?? selected}`;
+    const state = writingState();
+    const label = selected === null ? "全カット" : `カット ${selected + 1}`;
+    const section = element(parent, "div", "cut-writing section");
+    element(section, "strong", "", `${label}のLLM作成`);
+    const instruction = input(section, `${label}の日本語指示`, state.instructions[scope], true);
+    instruction.oninput = () => { state.instructions[scope] = instruction.value; changed(); };
+    const storyPanel = element(section, "details"); element(storyPanel, "summary", "", "ストーリー（任意・編集可能）");
+    storyPanel.open = Boolean(state.stories[scope]);
+    const story = input(storyPanel, `${label}のストーリー`, state.stories[scope], true); story.rows = 4;
+    story.oninput = () => { state.stories[scope] = story.value; changed(); };
+    if (selected > 0) {
+      const wrapper = element(section, "label"); const previous = element(wrapper, "input"); previous.type = "checkbox";
+      previous.checked = state.previous[scope] ?? true; wrapper.append(" 前カットの文章を踏まえる");
+      previous.onchange = () => { state.previous[scope] = previous.checked; changed(); };
+      element(section, "div", "muted", `参照元：カット ${selected}。LLMの文章作成用です。映像・音声の継続設定は変わりません。`);
+    }
+    const buttons = element(section, "div", "row");
+    for (const [text, action] of [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]]) {
+      button(buttons, text, () => llmTask(async () => {
+        const baseline = structuredClone(plan), sourceScene = structuredClone(scene);
+        pendingDrafts.delete(scope);
+        const drafts = await llm.create(baseline, sourceScene, selected, {
+          instruction: state.instructions[scope] ?? "", story: state.stories[scope] ?? "",
+          includePrevious: selected === null || selected > 0 && (state.previous[scope] ?? true), sceneStory: state.stories.all ?? "",
+        }, action, value => { state.stories[scope] = value; changed(); });
+        if (drafts) pendingDrafts.set(scope, { drafts, baseline, scene: sourceScene });
+        status.textContent = drafts ? `${label}のPrompt草案を確認し、「草案を適用」を押してください。`
+          : `${label}のストーリーを作成しました。ストーリー欄で確認・編集できます。`;
+      }));
+    }
+    element(section, "div", "muted", "Prompt作成：ストーリーがあれば使用し、空欄なら日本語指示から作成します。");
+    const pending = pendingDrafts.get(scope);
+    if (pending) {
+      const panel = element(section, "div", "llm-drafts");
+      for (const item of pending.drafts) {
+        const text = input(panel, `カット ${item.index + 1} のPrompt草案`, item.prompt, true); text.rows = 5;
+        text.oninput = () => { item.prompt = text.value; };
+        const details = element(panel, "details"); element(details, "summary", "", "草案の開始・終了状態");
+        for (const [key, name] of [["start_state", "開始状態"], ["end_state", "終了状態"]]) {
+          const field = input(details, name, item[key], true); field.oninput = () => { item[key] = field.value; };
+        }
+      }
+      button(panel, "草案を適用", () => {
+        collect();
+        if (JSON.stringify(scene) !== JSON.stringify(pending.scene)) throw new Error("素材・モードが変わりました。草案を作り直してください。");
+        if (pending.drafts.some(d => !d.prompt.trim())) throw new Error("Prompt草案が空欄です。");
+        plan = applyDraft(plan, pending.baseline, pending.drafts); pendingDrafts.delete(scope); save(); render();
+      });
+      button(panel, "草案を破棄", () => { pendingDrafts.delete(scope); render(); });
+    }
+  }
   function preview(parent, asset, small = false) {
     if (!asset.file) return element(parent, "span", "symbol", "未選択");
     const e = element(parent, asset.kind === "image" ? "img" : asset.kind);
@@ -149,6 +222,7 @@ function attachDirector(node) {
     return e;
   }
   async function upload(files, kind, targetSlot = null) {
+    if (llmBusy) throw new Error("LLM処理が終わるまでお待ちください。");
     collect();
     if (!files.length) return;
     if (uploading) throw new Error("素材の読み込み完了を待ってください。");
@@ -223,6 +297,12 @@ function attachDirector(node) {
       L2V: "L2VA · one closing-frame slot · 先頭はNot Used",
     }[scene.mode]);
     const refs = referenceDescriptions(scene); const active = sceneAssets(scene);
+    if (scene.mode !== "T2V") {
+      const imageHeader = element(editor, "div", "row spread"); element(imageHeader, "strong", "", "画像（シーン共通）");
+      const analyze = button(imageHeader, "画像をまとめて解析", () => llmTask(async () => {
+        await llm.analyze(scene); status.textContent = "画像解析が完了しました。各画像の☰から結果を確認・編集できます。";
+      })); analyze.disabled = !active.some(a => a.kind === "image");
+    }
     const media = element(editor, "div", "media-track"); media.hidden = scene.mode === "T2V";
     const tracks = element(media, "div", "media-tracks");
     function drops(target, kind, slot = null) {
@@ -257,6 +337,10 @@ function attachDirector(node) {
           element(tile, "span", "clip-identity", dead ? "Not Used" : refs.filter(r => r.asset_index === index).map(r => r.label.replace(/[<>]/g, "")).join(" / ") || "不使用");
           tile.classList.toggle("inactive", !dead && !active.includes(asset));
           if (!dead) {
+            if (kind === "image") {
+              const badge = element(tile, "span", "analysis-badge", llm.imageRecord(asset).text.trim() ? "解析済み" : "未解析");
+              badge.title = "解析実行・Prompt作成時に画像内容を再確認します。☰から結果を確認・編集できます。";
+            }
             const remove = button(tile, "×", () => removeAsset(asset)); remove.className = "clip-remove"; remove.setAttribute("aria-label", `${title} ${slot + 1}を削除`);
             const removeClick = remove.onclick; remove.onclick = event => { event.stopPropagation(); return removeClick(); };
             const details = button(tile, "☰", () => { collect(); selectedAsset = index; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
@@ -301,6 +385,14 @@ function attachDirector(node) {
       element(line, "span", "muted", `${LANES.find(l => l[0] === asset.kind)[1]} ${asset.slot + 1}`);
       button(line, "差し替え", () => chooseFiles(asset.kind, asset.slot)); button(line, "削除", () => removeAsset(asset));
       preview(panel, asset);
+      if (asset.kind === "image" && active.includes(asset)) {
+        button(line, "この画像を解析", () => llmTask(async () => {
+          await llm.analyze(scene, [asset], true); status.textContent = "この画像の解析が完了しました。結果は編集できます。";
+        }));
+        const record = llm.imageRecord(asset);
+        const analysis = input(panel, "画像解析結果（確認・編集）", record.text, true); analysis.rows = 4;
+        analysis.oninput = () => { record.text = analysis.value; changed(); };
+      }
       if (asset.kind === "video") {
         const label = element(panel, "label"); const audio = element(label, "input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false; label.append(" 動画の音声も参照する");
         audio.onchange = () => { asset.use_audio = audio.checked; save(); render(); };
@@ -325,24 +417,47 @@ function attachDirector(node) {
     const shot = plan.shots[cut]; const line = element(editor, "div", "row spread");
     const seconds = input(line, "生成秒数（overlap込み）", shot.duration_seconds); seconds.style.width = "125px";
     element(line, "span", "muted", "完成尺は重複を除いた長さです");
-    button(line, "このカットを削除", () => { if (plan.shots.length === 1) throw new Error("1カットは必要です。"); collect(); plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render(); });
+    button(line, "このカットを削除", () => {
+      if (plan.shots.length === 1) throw new Error("1カットは必要です。");
+      collect(); const scope = `cut:${plan.shots[cut].id ?? cut}`, state = writingState();
+      for (const values of [state.instructions, state.stories, state.previous]) delete values[scope];
+      pendingDrafts.delete(scope); plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render();
+    });
+    renderWriting(editor, cut);
     const prompt = input(editor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 7;
     const advanced = element(editor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
     const fields = element(advanced, "div", "row"); const id = input(fields, "ID", shot.id ?? `cut${cut + 1}`); const seed = input(fields, "seed（空欄は接続seed）", shot.seed);
     const start = input(advanced, "開始状態", shot.start_state, true); const end = input(advanced, "終了状態", shot.end_state, true);
     collect = () => {
+      const oldScope = `cut:${plan.shots[cut].id ?? cut}`;
       plan.shots[cut] = updateCut(plan.shots[cut], { id: id.value, seconds: seconds.value, seed: seed.value, prompt: prompt.value });
+      const newScope = `cut:${plan.shots[cut].id ?? cut}`;
+      if (newScope !== oldScope) {
+        const state = writingState();
+        for (const values of [state.instructions, state.stories, state.previous]) {
+          if (oldScope in values) { values[newScope] = values[oldScope]; delete values[oldScope]; }
+        }
+        pendingDrafts.delete(oldScope);
+      }
       if (start.value || "start_state" in shot) plan.shots[cut].start_state = start.value;
       if (end.value || "end_state" in shot) plan.shots[cut].end_state = end.value;
       if (prefix.value || "prompt_prefix" in plan) plan.prompt_prefix = prefix.value;
     };
     for (const field of [prefix, seconds, prompt, id, seed, start, end]) field.oninput = () => { try { collect(); save(); error.textContent = ""; } catch (e) { report(e); } };
+    id.onchange = () => { try { collect(); save(); render(); } catch (e) { report(e); } };
     const importing = element(editor, "details"); element(importing, "summary", "", "Plan JSONを読み込む");
     const pasted = input(importing, "Plan JSONを貼り付け", pastedPlan, true); pasted.rows = 6; pasted.spellcheck = false;
     pasted.oninput = () => { pastedPlan = pasted.value; };
     button(importing, "貼り付けたJSONを読み込む", () => importPlan(pasted.value));
     const file = element(importing, "input"); file.type = "file"; file.accept = ".json,application/json";
     file.onchange = async () => { error.textContent = ""; try { if (file.files[0]) importPlan(await file.files[0].text()); } catch (e) { report(e); } };
+    const bulk = element(editor, "details"); element(bulk, "summary", "", "補助操作：全カットまとめて作成");
+    renderWriting(bulk, null);
+    const oldAnalysis = node.properties.h3_draft?.analysis;
+    if (oldAnalysis) {
+      const old = element(editor, "details"); element(old, "summary", "", "以前の画像解析結果");
+      input(old, "移行前の解析文（保存済み）", oldAnalysis, true).readOnly = true;
+    }
   }
 
   function showResult(result, canAdopt = true) {
@@ -411,7 +526,7 @@ function attachDirector(node) {
   };
   api.addEventListener("executed", executed);
   const removed = node.onRemoved;
-  node.onRemoved = function () { queue.stopped = true; api.removeEventListener("executed", executed); return removed?.apply(this, arguments); };
+  node.onRemoved = function () { queue.stopped = true; if (llmBusy) llm.stop().catch(report); api.removeEventListener("executed", executed); return removed?.apply(this, arguments); };
   button(toolbar, "結果を更新", async () => {
     queue.stopped = false;
     if (node.properties.h3_pending) await queue.watch(node.properties.h3_pending.prompt_id, node.properties.h3_pending.node_id);

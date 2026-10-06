@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { readPlan, updateCut } from "./web/director_plan.js";
-import { sceneAssets, referenceDescriptions } from "./web/director_llm.js";
+import { sceneAssets, referenceDescriptions, applyDraft, draftGraph, readDraft, imageAnalysisKey } from "./web/director_llm.js";
 
 if (!process.env.H3_DOM_MODULE) {
   console.log("Director UI DOM check skipped: set H3_DOM_MODULE to linkedom/esm/index.js.");
@@ -11,6 +11,7 @@ if (!process.env.H3_DOM_MODULE) {
 }
 const { parseHTML } = await import(pathToFileURL(process.env.H3_DOM_MODULE));
 const { document, window } = parseHTML("<html><head></head><body></body></html>");
+window.HTMLElement.prototype.scrollIntoView = () => {};
 // linkedom exposes a read-only select value; browsers provide this setter.
 const selectValue = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value");
 Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectValue, set(value) {
@@ -20,9 +21,21 @@ Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectVa
 } });
 let extension, draftOpened = false, queuedRecord;
 const uploaded = [];
+const llmCalls = [], history = new Map();
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
   async fetchApi(path, request) {
+    if (path.startsWith('/view?')) return { ok: true, arrayBuffer: async () => new TextEncoder().encode(path).buffer };
+    if (path.startsWith('/history/')) { const id = path.split('/').pop(); return { ok: true, json: async () => ({ [id]: history.get(id) }) }; }
+    if (path === '/prompt') {
+      const graph = JSON.parse(request.body).prompt, data = JSON.parse(graph.writer.inputs.custom_prompt);
+      const stage = graph.images ? 'analysis' : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
+      llmCalls.push({ stage, data });
+      const text = stage === 'analysis' ? '人物が庭にいる' : stage === 'story' ? '庭を歩いて振り返る'
+        : JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id })) });
+      const id = String(llmCalls.length); history.set(id, { status: { completed: true }, outputs: { result: { text: [text] } } });
+      return { ok: true, json: async () => ({ prompt_id: id }) };
+    }
     assert.equal(path, '/upload/image');
     const file = request.body.get('image'); uploaded.push(file.name);
     return { ok: true, json: async () => ({ name: file.name, subfolder: 'h3_scene_director' }) };
@@ -33,15 +46,17 @@ const scene = { mode: "R2V", assets: [{ kind: "image", file: "ref.png", role: "r
 const plan = { prompt_prefix: "Shared", shots: [{ id: "a", prompt: "First", seed: "18446744073709551615", duration_seconds: 15 }, { id: "b", prompt: "Second", duration_seconds: 15 }] };
 class Node {
   constructor() {
-    this.properties = {}; this.id = 1200; this.graph = { change() {} };
+    this.properties = { h3_llm: { loader: { model: 'existing.gguf' }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }; this.id = 1200; this.graph = { change() {} };
     this.widgets = [{ name: "run_name", value: "auto" }, { name: "plan_json", value: JSON.stringify(plan) }, { name: "scene_json", value: JSON.stringify(scene) }, { name: "use_current_settings", value: false }];
   }
   setDirtyCanvas() {}
   addDOMWidget(name, type, element) { this.element = element; document.body.append(element); }
 }
 const source = (await readFile(new URL("./web/director.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replace("import.meta.url", JSON.stringify(new URL("./web/director.js", import.meta.url).href));
-new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "openDraftDialog", "DirectorQueue", "projectRequest", "confirm", source)(
-  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, () => { draftOpened = true; }, Queue, async () => ({ scenes: [], batch: null, directory: "test" }), () => true);
+const llmSource = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", llmSource + '\nreturn DirectorLLM;')(api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey);
+new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", source)(
+  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, LLM, () => { draftOpened = true; }, Queue, async () => ({ scenes: [], batch: null, directory: "test" }), () => true);
 await extension.beforeRegisterNodeDef(Node, { name: "H3SceneDirector" });
 const node = new Node(); node.onNodeCreated();
 const root = node.element;
@@ -58,7 +73,7 @@ field("カット 2 のPrompt").value = "Edited second"; field("カット 2 のPr
 await byText("＋ カット追加").onclick();
 assert.equal(root.querySelectorAll(".cut-tab").length, 3);
 field("カット 3 のPrompt").value = "Third"; field("カット 3 のPrompt").oninput();
-await byText("LLMで作成・修正").onclick(); assert.equal(draftOpened, true);
+await byText("LLM設定").onclick(); assert.equal(draftOpened, true);
 await byText("このシーンを生成").onclick();
 assert.deepEqual(queuedRecord.plan.shots.map(s => s.prompt), ["Edited first", "Edited second", "Third"]);
 assert.equal(queuedRecord.plan.shots[0].seed, "18446744073709551615");
@@ -152,5 +167,52 @@ await drop('audio', 0, 'wrong.png', 'image/png');
 assert.match(root.querySelector('[role="alert"]').textContent, /ファイルの種類/);
 await switchMode('R2V');
 assertHealthy();
-console.log("Director DOM: inline cut editing, tabs, additions, seed precision, modal entry, generation and library passed.");
+await root.querySelector('[aria-label="カット 1"]').onclick();
+field('カット 1の日本語指示').value = '庭を歩く'; field('カット 1の日本語指示').oninput();
+await root.querySelector('[aria-label="カット 2"]').onclick();
+assert.equal(field('カット 2の日本語指示').value, '');
+field('カット 2の日本語指示').value = '振り返る'; field('カット 2の日本語指示').oninput();
+await byText('画像をまとめて解析').onclick(); assertHealthy();
+const analyzed = llmCalls.length;
+assert.ok(analyzed > 0 && llmCalls.every(c => c.stage === 'analysis'));
+await byText('画像をまとめて解析').onclick(); assertHealthy();
+assert.equal(llmCalls.length, analyzed, 'Reuse completed image analyses');
+assert.ok(root.querySelector('.analysis-badge').textContent.includes('解析済み'));
+await root.querySelector('.media-clip[data-kind="image"] .clip-details').onclick({ stopPropagation() {} });
+assertHealthy();
+await byText('この画像を解析').onclick(); assertHealthy();
+assert.equal(llmCalls.length, analyzed + 1, 'Individual image action queues just one analysis');
+field('画像解析結果（確認・編集）').value = '手動で確認した人物'; field('画像解析結果（確認・編集）').oninput();
+const prior = JSON.parse(node.widgets.find(w => w.name === 'plan_json').value);
+await byText('ストーリー→Prompt').onclick(); assertHealthy();
+assert.deepEqual(llmCalls.slice(-2).map(c => c.stage), ['story', 'prompt']);
+assert.equal(llmCalls.at(-1).data.selected_cut, 2);
+assert.equal(llmCalls.at(-1).data.include_previous, true);
+assert.ok(llmCalls.at(-1).data.image_analysis.includes('手動で確認した人物'));
+assert.equal(field('カット 2のストーリー').value, '庭を歩いて振り返る');
+assert.deepEqual(JSON.parse(node.widgets.find(w => w.name === 'plan_json').value), prior);
+await byText('草案を適用').onclick(); assertHealthy();
+const applied = JSON.parse(node.widgets.find(w => w.name === 'plan_json').value);
+assert.deepEqual(applied.shots[0], prior.shots[0]);
+assert.equal(applied.shots[1].prompt, 'Generated ' + applied.shots[1].id);
+const previous = [...root.querySelectorAll('label')].find(l => l.textContent.includes('前カットの文章を踏まえる')).querySelector('input');
+previous.checked = false; previous.onchange();
+field('カット 2のストーリー').value = ''; field('カット 2のストーリー').oninput();
+await byText('Prompt作成').onclick(); assertHealthy();
+assert.equal(llmCalls.at(-1).data.include_previous, false);
+assert.equal(llmCalls.at(-1).data.cuts.length, 1);
+assert.equal(llmCalls.at(-1).data.story, '');
+assert.equal(llmCalls.at(-1).data.instruction, '振り返る');
+field('カット 2 のPrompt').value = 'Manual after draft'; field('カット 2 のPrompt').oninput();
+await byText('草案を適用').onclick();
+assert.match(root.querySelector('[role="alert"]').textContent, /変更/);
+await byText('草案を破棄').onclick();
+await root.querySelector('[aria-label="カット 1"]').onclick();
+assert.equal(field('カット 1の日本語指示').value, '庭を歩く');
+await byText('Prompt作成').onclick(); assertHealthy();
+assert.equal(llmCalls.at(-1).data.include_previous, false);
+assert.equal(llmCalls.at(-1).data.cuts.length, 1);
+node.onConfigure();
+assert.equal(field('カット 1の日本語指示').value, '庭を歩く');
+console.log("Director DOM: inline LLM actions, per-cut instructions/story, image reuse, previous-cut opt-out, reviewed apply, stale-draft protection and settings entry passed.");
 console.log('Director UI: mode buttons, 9/3/3 lanes, shared boundary slots, locked L2V start, slot drops, pointer swapping/moving, reference order, replacement, removal and reload passed.');

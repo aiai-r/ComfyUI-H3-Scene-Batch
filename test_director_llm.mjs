@@ -31,6 +31,15 @@ assert.deepEqual({ config, plan, scene }, before);
 assert.deepEqual(referenceDescriptions(scene).map(r => r.label), ["<Picture 1>", "<Audio 1>"]);
 assert.deepEqual(referenceDescriptions({ ...scene, assets: [...scene.assets, { kind: "video", file: "clip.mp4", use_audio: true }] }).map(r => r.label), ["<Picture 1>", "<Audio 1>", "<Video 1>", "<Audio 2>"]);
 assert.equal(draftGraph(config, { ...scene, mode: "T2V" }, plan, "prompt", "", "", null).images, undefined);
+for (const selected of [0, 1]) {
+  const solo = draftGraph(config, scene, plan, "prompt", "指示", "", selected, "解析", "前カットの話", false);
+  const request = JSON.parse(solo.writer.inputs.custom_prompt);
+  assert.equal(request.cuts.length, 1);
+  assert.equal(request.cuts[0].id, plan.shots[selected].id);
+  assert.equal(request.scene_story, "");
+  assert.equal(request.include_previous, false);
+  assert.match(solo.writer.inputs.system_prompt, /self-contained H3 prompt/);
+}
 const analysis = draftGraph(config, scene, plan, "analysis", "Do not send this", "Or this", null);
 assert.deepEqual(analysis.writer.inputs.images, ["images", 0]);
 assert.equal(analysis.writer.inputs.cache_image_analysis, true);
