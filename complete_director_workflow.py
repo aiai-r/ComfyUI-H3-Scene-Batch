@@ -4,6 +4,49 @@ import json
 from pathlib import Path
 
 
+REMOVED_INPUTS = {
+    **{i: 'LoadImage' for i in range(600, 609)},
+    **{i: 'ImageTensorList' for i in range(701, 709)},
+    **{i: 'LoadAudio' for i in (802, 845)},
+    **{i: 'H3SceneImagePath' for i in range(832, 841)},
+    **{i: '5bb9f0b1-40c1-4f96-babf-d3abd87db0bd' for i in (822, 952, 953, 954)},
+    **{i: 'PreviewAny' for i in (224, 805, 828, 962, 963, 964, 1208, 1209)},
+    **{i: 'PrimitiveFloat' for i in (972, 973, 974)},
+    136: 'MiniMaxH3ReferenceToVideo', 825: 'FolderBatch Load Image',
+    826: 'FolderBatch Image Queue', 827: 'AILab_HuggingFaceDownloader', 831: 'H3SceneBatchLoad',
+}
+
+
+def clean_layout(workflow):
+    result = copy.deepcopy(workflow)
+    nodes = {n['id']: n for n in result['nodes']}
+    if nodes[1200]['type'] != 'H3SceneDirector' or nodes[1211]['type'] != 'H3SceneResult':
+        raise ValueError('Expected the completed Director development workflow.')
+    config = nodes[1200]['properties']['h3_llm']
+    if not all(key in config for key in ('loader', 'story', 'prompt')):
+        raise ValueError('Migrate the LLM settings into Director before removing old nodes.')
+    removed = set(nodes) & REMOVED_INPUTS.keys()
+    for node_id in removed:
+        if nodes[node_id]['type'] != REMOVED_INPUTS[node_id]:
+            raise ValueError(f'Node {node_id} was replaced; inspect before cleanup.')
+    if any(link[1] in removed and link[3] not in removed for link in result['links']):
+        raise ValueError('A legacy input still feeds a retained node; inspect before cleanup.')
+    result['nodes'] = [n for n in result['nodes'] if n['id'] not in removed]
+    result['links'] = [link for link in result['links'] if link[1] not in removed and link[3] not in removed]
+    links = {link[0] for link in result['links']}
+    for node in result['nodes']:
+        for output in node.get('outputs', []):
+            if output.get('links') is not None:
+                output['links'] = [link for link in output['links'] if link in links]
+    result['groups'] = [group for group in result.get('groups', []) if group.get('id') not in range(1, 12)]
+    if 'definitions' in result:
+        result['definitions']['subgraphs'] = [g for g in result['definitions'].get('subgraphs', [])
+                                                if g['id'] != '5bb9f0b1-40c1-4f96-babf-d3abd87db0bd']
+    for node_id, position in {159: [3330, -500], 801: [4080, -500], 841: [3330, 260]}.items():
+        nodes[node_id]['pos'] = position
+    return result
+
+
 def complete(workflow):
     result = copy.deepcopy(workflow)
     nodes = {n['id']: n for n in result['nodes']}
@@ -36,14 +79,15 @@ def complete(workflow):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('workflow', type=Path)
+    parser.add_argument('--clean-layout', action='store_true')
     args = parser.parse_args()
     if args.workflow.name != 'video_minimax_h3_scene_director_dev.json':
         raise ValueError('Update only the named development workflow.')
     original = args.workflow.read_bytes()
-    updated = complete(json.loads(original))
-    backup = args.workflow.with_suffix('.stage2-backup.json')
+    updated = clean_layout(json.loads(original) if args.clean_layout else complete(json.loads(original)))
+    backup = args.workflow.with_suffix('.pre-input-cleanup.json' if args.clean_layout else '.stage2-backup.json')
     if backup.exists():
-        raise ValueError('Stage 2 backup already exists; inspect before updating again.')
+        raise ValueError('Backup already exists; inspect before updating again.')
     backup.write_bytes(original)
     args.workflow.write_text(json.dumps(updated, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     print(args.workflow)

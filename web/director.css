@@ -15,6 +15,11 @@
 .h3-director .label { display:block; color:#aebcd5; font-size:12px; margin:7px 0 4px; }
 .h3-director .muted { color:#aebcd5; font-size:12px; }
 .h3-director .strip { display:flex; gap:8px; overflow-x:auto; padding:5px 1px 9px; }
+.h3-director .media-zones { display:flex; gap:10px; flex-wrap:wrap; }
+.h3-director .media-zone { flex:1; min-width:180px; overflow:hidden; border:1px dashed #607394; border-radius:6px; padding:10px; background:#242d3c; }
+.h3-director .media-zone button { padding:4px 7px; font-size:12px; }
+.h3-director .drop-hint { color:#b7c8e7; padding:12px 0 4px; font-size:12px; }
+.h3-director .drag-over { border-color:#bac9ff; background:#344666; }
 .h3-director .asset { width:88px; flex-shrink:0; padding:4px; text-align:center; }
 .h3-director .asset img,.h3-director .asset video { width:76px; height:60px; object-fit:cover; border-radius:3px; pointer-events:none; }
 .h3-director .asset .symbol { display:block; height:60px; padding:18px 0; background:#222d43; }

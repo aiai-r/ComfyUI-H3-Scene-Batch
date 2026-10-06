@@ -15,7 +15,7 @@ from test_media import package
 
 project = importlib.import_module(package.__name__ + '.director_project')
 director = importlib.import_module(package.__name__ + '.director')
-from complete_director_workflow import complete
+from complete_director_workflow import complete, clean_layout, REMOVED_INPUTS
 
 
 class Queue:
@@ -190,6 +190,34 @@ class DirectorProjectTests(unittest.TestCase):
             self.assertIn(link_id, nodes[origin]['outputs'][output]['links'])
             self.assertEqual(nodes[target]['inputs'][slot]['link'], link_id)
         self.assertNotIn('title', nodes[1211])
+
+    def test_clean_layout_removes_only_disconnected_legacy_inputs(self):
+        path = Path(__file__).resolve().parents[2] / 'user/default/workflows/video_minimax_h3_scene_director_dev.pre-input-cleanup.json'
+        source = json.loads(path.read_bytes())
+        before = copy.deepcopy(source)
+        result = clean_layout(source)
+        self.assertEqual(source, before)
+        nodes = {n['id']: n for n in result['nodes']}
+        self.assertFalse(set(nodes) & REMOVED_INPUTS.keys())
+        for old in source['nodes']:
+            if old['id'] in REMOVED_INPUTS:
+                continue
+            new = copy.deepcopy(nodes[old['id']])
+            new['outputs'] = old.get('outputs', [])
+            if 'outputs' not in old:
+                new.pop('outputs')
+            if old['id'] in (159, 801, 841):
+                new['pos'] = old['pos']
+            self.assertEqual(new, old)
+        self.assertEqual(nodes[1200]['widgets_values'], next(n for n in source['nodes'] if n['id'] == 1200)['widgets_values'])
+        for link_id, origin, output, target, slot, _ in result['links']:
+            self.assertIn(link_id, nodes[origin]['outputs'][output]['links'])
+            self.assertEqual(nodes[target]['inputs'][slot]['link'], link_id)
+        self.assertEqual(result['definitions']['subgraphs'], [])
+        self.assertEqual(clean_layout(result), result)
+        broken = copy.deepcopy(source)
+        broken['links'].append([9999, 600, 0, 1210, 0, 'IMAGE'])
+        with self.assertRaises(ValueError): clean_layout(broken)
 
 
 if __name__ == '__main__':

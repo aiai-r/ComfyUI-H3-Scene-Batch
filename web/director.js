@@ -16,6 +16,22 @@ function viewUrl(file) {
   return viewUrl({ filename: path.slice(split + 1), subfolder: path.slice(0, Math.max(0, split)), type });
 }
 
+const MEDIA_ZONES = {
+  R2V: [["image", "reference", "画像"], ["audio", "reference", "音声"], ["video", "reference", "動画"]],
+  T2V: [], I2V: [["image", "first", "始点画像"]], L2V: [["image", "last", "終点画像"]],
+  FL2V: [["image", "first", "始点画像"], ["image", "last", "終点画像"]],
+};
+
+function mediaKind(file) {
+  const kind = file.type.split("/")[0];
+  if (["image", "audio", "video"].includes(kind)) return kind;
+  const extension = file.name.split(".").pop().toLowerCase();
+  if (["png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "avif"].includes(extension)) return "image";
+  if (["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "aiff"].includes(extension)) return "audio";
+  if (["mp4", "webm", "mkv", "mov", "avi", "m4v", "mpeg", "mpg"].includes(extension)) return "video";
+  throw new Error("画像・音声・動画ファイルを選択してください。");
+}
+
 function attachDirector(node) {
   const widgets = Object.fromEntries(node.widgets.map(w => [w.name, w]));
   for (const name of ["plan_json", "scene_json", "run_name", "use_current_settings"]) {
@@ -24,6 +40,13 @@ function attachDirector(node) {
     if (w.element) w.element.hidden = true;
   }
   const root = document.createElement("div"); root.className = "h3-director";
+  root.ondragover = event => {
+    if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); event.stopPropagation(); }
+  };
+  root.ondrop = event => {
+    if (!event.dataTransfer?.files.length) return;
+    event.preventDefault(); event.stopPropagation(); report(new Error("モードに対応する素材欄へドロップしてください。"));
+  };
   const top = element(root, "div", "row");
   const project = input(top, "プロジェクト", node.properties.h3_project ?? "MyScenes");
   project.onchange = () => { node.properties.h3_project = project.value; changed(); };
@@ -77,26 +100,28 @@ function attachDirector(node) {
     if (!small) e.style.cssText = "max-width:100%;max-height:140px;display:block";
     return e;
   }
-  async function upload(files, replace = null) {
+  async function upload(files, kind, role, replace = null) {
+    collect();
+    if (files.some(file => mediaKind(file) !== kind)) throw new Error("ファイルの種類に対応する素材欄へドロップしてください。");
+    if (role !== "reference" && files.length > 1) throw new Error("始点・終点の各欄には画像を1枚ずつ指定してください。");
+    if (!replace && role !== "reference") replace = scene.assets.find(a => a.kind === kind && a.role === role);
     for (const file of files) {
-      const kind = file.type.split("/")[0];
-      if (!["image", "audio", "video"].includes(kind)) throw new Error("画像・音声・動画ファイルを選択してください。");
       const form = new FormData(); form.append("image", file); form.append("type", "input"); form.append("subfolder", "h3_scene_director");
       const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
       if (!response.ok) throw new Error("素材をアップロードできませんでした。");
       const data = await response.json();
-      const role = kind === "image" && ["I2V", "FL2V"].includes(scene.mode) && !scene.assets.some(a => a.role === "first") ? "first" : kind === "image" && ["L2V", "FL2V"].includes(scene.mode) ? "last" : "reference";
       const asset = { kind, role, file: [data.subfolder, data.name].filter(Boolean).join("/"), enabled: true, note: "" };
       if (replace) {
-        Object.assign(replace, { ...asset, note: replace.note ?? "", role: replace.kind === kind ? replace.role : role, enabled: replace.enabled !== false }); replace = null;
+        selectedAsset = scene.assets.indexOf(replace);
+        Object.assign(replace, { ...asset, note: replace.note ?? "" }); replace = null;
       } else { scene.assets.push(asset); selectedAsset = scene.assets.length - 1; }
       save();
     }
     render();
   }
-  function chooseFiles(replace = null) {
-    const file = document.createElement("input"); file.type = "file"; file.accept = "image/*,audio/*,video/*"; file.multiple = !replace;
-    file.onchange = () => upload([...file.files], replace).catch(report); file.click();
+  function chooseFiles(kind, role, replace = null) {
+    const file = document.createElement("input"); file.type = "file"; file.accept = `${kind}/*`; file.multiple = !replace && role === "reference";
+    file.onchange = () => upload([...file.files], kind, role, replace).catch(report); file.click();
   }
 
   function render() {
@@ -104,19 +129,39 @@ function attachDirector(node) {
     const header = element(editor, "div", "row");
     const title = input(header, "シーン名（採用保存時）", node.properties.h3_title ?? ""); title.placeholder = "例：庭を歩く";
     title.oninput = () => { node.properties.h3_title = title.value; changed(); };
-    select(header, "生成モード", [["R2V", "R2V · 参照素材"], ["T2V", "T2V · Promptのみ"], ["I2V", "I2V · 始点"], ["L2V", "L2V · 終点"], ["FL2V", "FL2V · 始点＋終点"]], scene.mode, v => { scene.mode = v; });
-    const mediaHeader = element(editor, "div", "row spread section"); element(mediaHeader, "strong", "", "参照素材"); button(mediaHeader, "素材を追加", () => chooseFiles());
-    const strip = element(editor, "div", "strip");
-    strip.ondragover = e => e.preventDefault(); strip.ondrop = e => { e.preventDefault(); upload([...e.dataTransfer.files]).catch(report); };
+    select(header, "生成モード", [["R2V", "R2V · 参照素材"], ["T2V", "T2V · Promptのみ"], ["I2V", "I2V · 始点"], ["L2V", "L2V · 終点"], ["FL2V", "FL2V · 始点＋終点"]], scene.mode, v => {
+      scene.mode = v; selectedAsset = scene.assets.indexOf(sceneAssets(scene)[0]);
+    });
     const refs = referenceDescriptions(scene); const active = sceneAssets(scene);
-    if (!scene.assets.length) element(strip, "div", "empty grow", "画像・音声・動画をここへドロップ、または「素材を追加」");
-    scene.assets.forEach((asset, index) => {
+    function assetCard(strip, asset, index) {
       const card = button(strip, "", () => { collect(); selectedAsset = index; render(); });
       card.className = "asset" + (active.includes(asset) ? "" : " inactive"); card.setAttribute("aria-selected", index === selectedAsset);
       card.setAttribute("aria-label", `素材 ${index + 1} ${asset.file.split(/[\\/]/).pop() || "未選択"}`);
       if (asset.kind === "audio") element(card, "span", "symbol", "♫ 音声"); else preview(card, asset, true);
       element(card, "span", "", refs.filter(r => r.asset_index === index).map(r => r.label).join(" / ") || "不使用");
-    });
+    }
+    const media = element(editor, "div", "media-zones section");
+    for (const [kind, role, title] of MEDIA_ZONES[scene.mode]) {
+      const zone = element(media, "section", "media-zone");
+      zone.dataset.kind = kind; zone.dataset.role = role; zone.setAttribute("aria-label", `${title}入力`);
+      const heading = element(zone, "div", "row spread"); element(heading, "strong", "", title);
+      button(heading, `${title}を選択`, () => chooseFiles(kind, role));
+      element(zone, "div", "drop-hint", `${title}をここへD&D`);
+      const strip = element(zone, "div", "strip");
+      scene.assets.forEach((asset, index) => { if (asset.kind === kind && (asset.role ?? "reference") === role) assetCard(strip, asset, index); });
+      zone.ondragover = event => { event.preventDefault(); event.stopPropagation(); zone.classList.add("drag-over"); };
+      zone.ondragleave = () => zone.classList.remove("drag-over");
+      zone.ondrop = async event => {
+        event.preventDefault(); event.stopPropagation(); zone.classList.remove("drag-over"); error.textContent = "";
+        try { await upload([...event.dataTransfer.files], kind, role); } catch (e) { report(e); }
+      };
+    }
+    if (scene.mode === "T2V") element(media, "div", "muted", "T2VはPromptのみで生成します。");
+    const hidden = scene.assets.filter(asset => !MEDIA_ZONES[scene.mode].some(([kind, role]) => asset.kind === kind && (asset.role ?? "reference") === role));
+    if (hidden.length) {
+      const stored = element(editor, "details"); element(stored, "summary", "", `他のモード用の素材 · ${hidden.length}`);
+      const strip = element(stored, "div", "strip"); hidden.forEach(asset => assetCard(strip, asset, scene.assets.indexOf(asset)));
+    }
     selectedAsset = Math.min(selectedAsset, scene.assets.length - 1);
     const asset = scene.assets[selectedAsset];
     if (asset) {
@@ -124,7 +169,7 @@ function attachDirector(node) {
       const enabledLabel = element(line, "label"); const enabled = element(enabledLabel, "input"); enabled.type = "checkbox"; enabled.checked = asset.enabled !== false; enabledLabel.append(" 使用する");
       enabled.onchange = () => { asset.enabled = enabled.checked; save(); render(); };
       if (asset.kind === "image") select(line, "役割", [["reference", "R2V参照"], ["first", "始点画像"], ["last", "終点画像"]], asset.role ?? "reference", v => { asset.role = v; });
-      button(line, "差し替え", () => chooseFiles(asset)); button(line, "削除", () => { collect(); scene.assets.splice(selectedAsset, 1); save(); render(); });
+      button(line, "差し替え", () => chooseFiles(asset.kind, asset.role ?? "reference", asset)); button(line, "削除", () => { collect(); scene.assets.splice(selectedAsset, 1); save(); render(); });
       if (asset.kind !== "image") preview(panel, asset);
       if (asset.kind === "video") {
         const label = element(panel, "label"); const audio = element(label, "input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false; label.append(" 動画の音声も参照する");
