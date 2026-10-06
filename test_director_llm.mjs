@@ -15,6 +15,17 @@ const scene = { mode: "R2V", assets: [
   { kind: "image", role: "last", file: "last.png" },
 ] };
 const before = structuredClone({ config, plan, scene });
+// ComfyUI exposes node properties through reactive proxies in the browser.
+const reactive = value => new Proxy(value, { get(target, key) {
+  const item = target[key]; return item && typeof item === "object" ? reactive(item) : item;
+} });
+assert.throws(() => structuredClone(reactive(config).loader), { name: "DataCloneError" });
+for (const action of ["analysis", "story", "prompt"]) {
+  const output = draftGraph(reactive(config), scene, plan, action, "指示", "", 1);
+  assert.deepEqual(output.model.inputs, config.loader);
+  assert.deepEqual(output.parameters.inputs, config[action === "story" ? "story" : "prompt"].parameters);
+  assert.doesNotThrow(() => structuredClone(output));
+}
 const graph = draftGraph(config, scene, plan, "prompt", "Open the gate", "Story", 1, "Image observations", "Scene story");
 assert.deepEqual(graph.model.inputs, config.loader);
 assert.equal(graph.writer.inputs.cache_image_analysis, true);

@@ -69,9 +69,9 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
       length: shot.length, prompt: shot.prompt ?? "", start_state: shot.start_state, end_state: shot.end_state }))
       .filter((_, i) => !partial || i === selected || continuation && i < selected) };
   const graph = {
-    model: { class_type: "llama_cpp_model_loader", inputs: structuredClone(config.loader) },
-    parameters: { class_type: "llama_cpp_parameters", inputs: structuredClone(stage.parameters) },
-    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...structuredClone(stage.inputs),
+    model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
+    parameters: { class_type: "llama_cpp_parameters", inputs: JSON.parse(JSON.stringify(stage.parameters)) },
+    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(stage.inputs)),
       llama_model: ["model", 0], parameters: ["parameters", 0], custom_prompt: JSON.stringify(request), system_prompt: system } },
     result: { class_type: "PreviewAny", inputs: { source: ["writer", 0] } },
   };
