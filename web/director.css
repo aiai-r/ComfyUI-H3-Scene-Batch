@@ -8,8 +8,9 @@
 .h3-director button[aria-selected=true],.h3-director button.primary { background:#4b62ac; border-color:#92a5ec; }
 .h3-director button:disabled { opacity:.4; cursor:default; }
 .h3-director .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-.h3-director .spread { justify-content:space-between; }
+.h3-director .spread { justify-content:flex-start; }
 .h3-director .grow { flex:1; }
+.h3-director .spread > .grow { flex:0 1 auto; }
 .h3-director .tabs { display:flex; gap:6px; border-bottom:1px solid #434f65; padding-bottom:12px; margin-bottom:12px; }
 .h3-director .section { margin:12px 0; }
 .h3-director .label { display:block; color:#aebcd5; font-size:12px; margin:7px 0 4px; }

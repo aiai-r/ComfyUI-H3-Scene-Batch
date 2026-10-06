@@ -343,8 +343,8 @@ function attachDirector(node) {
             }
             const remove = button(tile, "×", () => removeAsset(asset)); remove.className = "clip-remove"; remove.setAttribute("aria-label", `${title} ${slot + 1}を削除`);
             const removeClick = remove.onclick; remove.onclick = event => { event.stopPropagation(); return removeClick(); };
-            const details = button(tile, "☰", () => { collect(); selectedAsset = index; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
-            details.className = "clip-details"; details.title = "Open preview and details";
+            const details = button(tile, "☰", () => { collect(); selectedAsset = selectedAsset === index ? -1 : index; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
+            details.className = "clip-details"; details.title = "詳細を開く／閉じる"; details.setAttribute("aria-expanded", selectedAsset === index);
             const detailsClick = details.onclick; details.onclick = event => { event.stopPropagation(); return detailsClick(); };
           }
         } else element(tile, "span", "slot-add", dead ? "Not Used" : "+");
