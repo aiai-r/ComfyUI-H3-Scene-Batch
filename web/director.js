@@ -16,11 +16,8 @@ function viewUrl(file) {
   return viewUrl({ filename: path.slice(split + 1), subfolder: path.slice(0, Math.max(0, split)), type });
 }
 
-const MEDIA_ZONES = {
-  R2V: [["image", "reference", "画像"], ["audio", "reference", "音声"], ["video", "reference", "動画"]],
-  T2V: [], I2V: [["image", "first", "始点画像"]], L2V: [["image", "last", "終点画像"]],
-  FL2V: [["image", "first", "始点画像"], ["image", "last", "終点画像"]],
-};
+const MODES = [["T2V", "T2VA"], ["I2V", "I2VA"], ["FL2V", "FL2VA"], ["L2V", "L2VA"], ["R2V", "REF2VA"]];
+const LANES = [["image", "Image", 9], ["video", "Video", 3], ["audio", "Audio", 3]];
 
 function mediaKind(file) {
   const kind = file.type.split("/")[0];
@@ -39,7 +36,7 @@ function attachDirector(node) {
     w.hidden = true; w.options = { ...w.options, hidden: true }; w.computeSize = () => [0, -4];
     if (w.element) w.element.hidden = true;
   }
-  const root = document.createElement("div"); root.className = "h3-director";
+  const root = document.createElement("div"); root.className = "h3-director"; root.tabIndex = 0;
   root.ondragover = event => {
     if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); event.stopPropagation(); }
   };
@@ -61,9 +58,10 @@ function attachDirector(node) {
   const error = element(root, "p", "status"); error.setAttribute("role", "alert");
   const toolbar = element(root, "div", "toolbar row");
   const draft = button(toolbar, "LLMで作成・修正", () => { collect(); openDraftDialog(node, () => { collect(); return plan; }, value => { plan = value; save(); render(); }, () => structuredClone(scene)); });
-  const generate = button(toolbar, "このシーンを生成", async () => { collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
+  const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
   button(toolbar, "中止", () => queue.project || queue.busy || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
-  let plan, scene, cut = 0, selectedAsset = 0, collect = () => {}, inLibrary = false, selected = new Set();
+  let plan, scene, cut = 0, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
+  let uploading = false, trackScroll = 0;
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
 
   function element(parent, tag, className = "", text = "") { const e = document.createElement(tag); e.className = className; e.textContent = text; parent.append(e); return e; }
@@ -82,7 +80,57 @@ function attachDirector(node) {
   }
   function changed() { node.graph?.change(); node.setDirtyCanvas(true, true); }
   function save() { widgets.plan_json.value = JSON.stringify(plan); widgets.scene_json.value = JSON.stringify(scene); changed(); }
+  function arrangeAssets() {
+    const selected = scene.assets[selectedAsset];
+    for (const [kind] of LANES) {
+      const assets = scene.assets.filter(a => a.kind === kind), occupied = new Set();
+      // Existing first/last records retain their boundary positions when opened.
+      const ordered = [...assets].sort((a, b) => Number(b.role === "first" || b.role === "last") - Number(a.role === "first" || a.role === "last"));
+      for (const asset of ordered) {
+        let slot = asset.slot ?? (asset.role === "first" ? 0 : asset.role === "last" ? 1 : 0);
+        if (!Number.isInteger(slot) || slot < 0) slot = 0;
+        while (occupied.has(slot)) slot++;
+        asset.slot = slot; occupied.add(slot);
+      }
+    }
+    scene.assets.sort((a, b) => LANES.findIndex(l => l[0] === a.kind) - LANES.findIndex(l => l[0] === b.kind) || a.slot - b.slot);
+    selectedAsset = scene.assets.indexOf(selected);
+  }
+  function roleAt(kind, slot) {
+    if (kind !== "image" || scene.mode === "R2V") return "reference";
+    if (slot === 0 && ["I2V", "FL2V"].includes(scene.mode)) return "first";
+    if (slot === 1 && ["L2V", "FL2V"].includes(scene.mode)) return "last";
+    return "reference";
+  }
+  function slotCount(kind) {
+    if (scene.mode === "T2V" || (scene.mode !== "R2V" && kind !== "image")) return 0;
+    if (scene.mode !== "R2V") return scene.mode === "I2V" ? 1 : 2;
+    return Math.max(LANES.find(l => l[0] === kind)[2], ...scene.assets.filter(a => a.kind === kind).map(a => a.slot + 1));
+  }
+  function locked(kind, slot) { return scene.mode === "L2V" && kind === "image" && slot === 0; }
+  function assetAt(kind, slot) { return scene.assets.find(a => a.kind === kind && a.slot === slot); }
+  function removeAsset(asset) {
+    collect(); scene.assets.splice(scene.assets.indexOf(asset), 1); selectedAsset = -1; save(); render();
+  }
+  function moveAsset(asset, slot) {
+    collect(); const other = assetAt(asset.kind, slot), previous = asset.slot;
+    asset.slot = slot; asset.role = roleAt(asset.kind, slot);
+    if (other && other !== asset) { other.slot = previous; other.role = roleAt(other.kind, previous); }
+    arrangeAssets(); save(); render();
+  }
+  root.onpaste = event => {
+    if (/INPUT|TEXTAREA/.test(event.target.tagName) || !event.clipboardData.files.length) return;
+    event.preventDefault(); event.stopPropagation(); return upload([...event.clipboardData.files], selectedLane).catch(report);
+  };
+  root.onkeydown = event => {
+    if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || inLibrary) return;
+    const asset = scene.assets[selectedAsset];
+    if ((event.key === "Delete" || event.key === "Backspace") && asset && !locked(asset.kind, asset.slot)) {
+      event.preventDefault(); event.stopPropagation(); removeAsset(asset);
+    }
+  };
   function switchTab(value) {
+    if (uploading) throw new Error("素材の読み込み完了を待ってください。");
     inLibrary = value; create.hidden = value; library.hidden = !value;
     createTab.setAttribute("aria-selected", !value); libraryTab.setAttribute("aria-selected", value);
     draft.hidden = value; generate.hidden = value;
@@ -100,77 +148,153 @@ function attachDirector(node) {
     if (!small) e.style.cssText = "max-width:100%;max-height:140px;display:block";
     return e;
   }
-  async function upload(files, kind, role, replace = null) {
+  async function upload(files, kind, targetSlot = null) {
     collect();
+    if (!files.length) return;
+    if (uploading) throw new Error("素材の読み込み完了を待ってください。");
     if (files.some(file => mediaKind(file) !== kind)) throw new Error("ファイルの種類に対応する素材欄へドロップしてください。");
-    if (role !== "reference" && files.length > 1) throw new Error("始点・終点の各欄には画像を1枚ずつ指定してください。");
-    if (!replace && role !== "reference") replace = scene.assets.find(a => a.kind === kind && a.role === role);
-    for (const file of files) {
-      const form = new FormData(); form.append("image", file); form.append("type", "input"); form.append("subfolder", "h3_scene_director");
-      const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
-      if (!response.ok) throw new Error("素材をアップロードできませんでした。");
-      const data = await response.json();
-      const asset = { kind, role, file: [data.subfolder, data.name].filter(Boolean).join("/"), enabled: true, note: "" };
-      if (replace) {
-        selectedAsset = scene.assets.indexOf(replace);
-        Object.assign(replace, { ...asset, note: replace.note ?? "" }); replace = null;
-      } else { scene.assets.push(asset); selectedAsset = scene.assets.length - 1; }
-      save();
+    const available = Array.from({ length: slotCount(kind) }, (_, i) => i).filter(i => !locked(kind, i) && !assetAt(kind, i));
+    if (targetSlot != null) {
+      if (targetSlot >= slotCount(kind)) throw new Error("現在のモードに対応する素材枠を選んでください。");
+      if (locked(kind, targetSlot)) throw new Error("L2VAの先頭スロットは使用しません。2番目へ画像を入れてください。");
+      available.splice(0, available.length, targetSlot, ...available.filter(i => i > targetSlot), ...available.filter(i => i < targetSlot));
     }
-    render();
+    if (files.length > available.length) throw new Error("空きスロットが足りません。素材を削除するか、差し替える枠へ1ファイルをドロップしてください。");
+    uploading = true; root.dataset.uploading = "true";
+    try {
+      for (const file of files) {
+        const slot = available.shift(), replace = assetAt(kind, slot);
+        const form = new FormData(); form.append("image", file); form.append("type", "input"); form.append("subfolder", "h3_scene_director");
+        const response = await api.fetchApi("/upload/image", { method: "POST", body: form });
+        if (!response.ok) throw new Error("素材をアップロードできませんでした。");
+        const data = await response.json();
+        const asset = { kind, role: roleAt(kind, slot), slot, file: [data.subfolder, data.name].filter(Boolean).join("/"), enabled: true, note: "" };
+        if (replace) {
+          selectedAsset = scene.assets.indexOf(replace);
+          Object.assign(replace, { ...asset, note: replace.note ?? "" });
+        } else { scene.assets.push(asset); selectedAsset = scene.assets.length - 1; }
+        arrangeAssets(); save();
+      }
+    } finally { uploading = false; root.dataset.uploading = "false"; render(); }
   }
-  function chooseFiles(kind, role, replace = null) {
-    const file = document.createElement("input"); file.type = "file"; file.accept = `${kind}/*`; file.multiple = !replace && role === "reference";
-    file.onchange = () => upload([...file.files], kind, role, replace).catch(report); file.click();
+  function chooseFiles(kind, slot = null) {
+    const file = document.createElement("input"); file.type = "file"; file.accept = `${kind}/*`; file.multiple = slot == null || !assetAt(kind, slot);
+    file.onchange = () => upload([...file.files], kind, slot).catch(report); file.click();
   }
 
   function render() {
+    trackScroll = editor.querySelector(".media-track")?.scrollLeft ?? trackScroll;
     editor.replaceChildren(); collect = () => {};
     const header = element(editor, "div", "row");
     const title = input(header, "シーン名（採用保存時）", node.properties.h3_title ?? ""); title.placeholder = "例：庭を歩く";
     title.oninput = () => { node.properties.h3_title = title.value; changed(); };
-    select(header, "生成モード", [["R2V", "R2V · 参照素材"], ["T2V", "T2V · Promptのみ"], ["I2V", "I2V · 始点"], ["L2V", "L2V · 終点"], ["FL2V", "FL2V · 始点＋終点"]], scene.mode, v => {
-      scene.mode = v; selectedAsset = scene.assets.indexOf(sceneAssets(scene)[0]);
-    });
-    const refs = referenceDescriptions(scene); const active = sceneAssets(scene);
-    function assetCard(strip, asset, index) {
-      const card = button(strip, "", () => { collect(); selectedAsset = index; render(); });
-      card.className = "asset" + (active.includes(asset) ? "" : " inactive"); card.setAttribute("aria-selected", index === selectedAsset);
-      card.setAttribute("aria-label", `素材 ${index + 1} ${asset.file.split(/[\\/]/).pop() || "未選択"}`);
-      if (asset.kind === "audio") element(card, "span", "symbol", "♫ 音声"); else preview(card, asset, true);
-      element(card, "span", "", refs.filter(r => r.asset_index === index).map(r => r.label).join(" / ") || "不使用");
+    const modeGroup = element(editor, "div", "mode-group section");
+    const modebar = element(modeGroup, "div", "modebar"); modebar.setAttribute("aria-label", "Model Mode");
+    element(modebar, "span", "mode-label", "Model Mode:");
+    for (const [mode, label] of MODES) {
+      const toggle = button(modebar, label, () => {
+        if (uploading) throw new Error("素材の読み込み完了を待ってください。");
+        collect(); scene.mode = mode;
+        for (const asset of scene.assets) asset.role = roleAt(asset.kind, asset.slot);
+        selectedAsset = -1; if (mode !== "R2V") selectedLane = "image";
+        save(); render();
+      });
+      toggle.dataset.mode = mode; toggle.className = "mode-button";
+      toggle.setAttribute("aria-pressed", mode === scene.mode);
     }
-    const media = element(editor, "div", "media-zones section");
-    for (const [kind, role, title] of MEDIA_ZONES[scene.mode]) {
-      const zone = element(media, "section", "media-zone");
-      zone.dataset.kind = kind; zone.dataset.role = role; zone.setAttribute("aria-label", `${title}入力`);
-      const heading = element(zone, "div", "row spread"); element(heading, "strong", "", title);
-      button(heading, `${title}を選択`, () => chooseFiles(kind, role));
-      element(zone, "div", "drop-hint", `${title}をここへD&D`);
-      const strip = element(zone, "div", "strip");
-      scene.assets.forEach((asset, index) => { if (asset.kind === kind && (asset.role ?? "reference") === role) assetCard(strip, asset, index); });
-      zone.ondragover = event => { event.preventDefault(); event.stopPropagation(); zone.classList.add("drag-over"); };
-      zone.ondragleave = () => zone.classList.remove("drag-over");
-      zone.ondrop = async event => {
-        event.preventDefault(); event.stopPropagation(); zone.classList.remove("drag-over"); error.textContent = "";
-        try { await upload([...event.dataTransfer.files], kind, role); } catch (e) { report(e); }
+    const actions = element(modebar, "div", "media-actions");
+    const chosen = scene.assets[selectedAsset];
+    if (chosen && !locked(chosen.kind, chosen.slot)) button(actions, "Remove", () => removeAsset(chosen)).className = "remove-media";
+    const clear = button(actions, "Clear", () => {
+      if (!scene.assets.length || !confirm("すべての素材を外しますか？Promptは保持します。")) return;
+      collect(); scene.assets = []; selectedAsset = -1; save(); render();
+    }); clear.className = "clear-media"; clear.disabled = !scene.assets.length;
+    element(modeGroup, "div", "mode-hint", {
+      R2V: "REF2VA · Image 9 / Video 3 / Audio 3 · ＋ または D&Dで追加",
+      T2V: "T2VA · no input frame",
+      I2V: "I2VA · one opening-frame slot",
+      FL2V: "FL2VA · opening and closing-frame slots",
+      L2V: "L2VA · one closing-frame slot · 先頭はNot Used",
+    }[scene.mode]);
+    const refs = referenceDescriptions(scene); const active = sceneAssets(scene);
+    const media = element(editor, "div", "media-track"); media.hidden = scene.mode === "T2V";
+    const tracks = element(media, "div", "media-tracks");
+    function drops(target, kind, slot = null) {
+      target.ondragover = event => { event.preventDefault(); event.stopPropagation(); target.classList.add("drag-over"); };
+      target.ondragleave = () => target.classList.remove("drag-over");
+      target.ondrop = async event => {
+        event.preventDefault(); event.stopPropagation(); target.classList.remove("drag-over"); error.textContent = "";
+        selectedLane = kind;
+        try { await upload([...event.dataTransfer.files], kind, slot); } catch (e) { report(e); }
       };
     }
-    if (scene.mode === "T2V") element(media, "div", "muted", "T2VはPromptのみで生成します。");
-    const hidden = scene.assets.filter(asset => !MEDIA_ZONES[scene.mode].some(([kind, role]) => asset.kind === kind && (asset.role ?? "reference") === role));
-    if (hidden.length) {
-      const stored = element(editor, "details"); element(stored, "summary", "", `他のモード用の素材 · ${hidden.length}`);
-      const strip = element(stored, "div", "strip"); hidden.forEach(asset => assetCard(strip, asset, scene.assets.indexOf(asset)));
+    for (const [kind, title] of LANES) {
+      const count = slotCount(kind); if (!count) continue;
+      const lane = element(tracks, "div", `media-lane ${kind}`);
+      lane.dataset.kind = kind; lane.setAttribute("aria-label", title);
+      lane.classList.toggle("selected", selectedLane === kind);
+      element(lane, "span", "lane-label", `${title}${selectedLane === kind ? " · selected" : ""}`);
+      lane.onclick = () => { collect(); selectedLane = kind; root.focus(); render(); };
+      drops(lane, kind);
+      const slots = element(lane, "div", "media-slots");
+      for (let slot = 0; slot < count; slot++) {
+        const asset = assetAt(kind, slot), index = scene.assets.indexOf(asset), dead = locked(kind, slot);
+        const tile = element(slots, "div", `media-slot ${asset ? "media-clip" : "empty-slot"}${dead ? " locked" : ""}`);
+        tile.dataset.slot = slot; tile.dataset.kind = kind; tile.dataset.role = roleAt(kind, slot);
+        tile.tabIndex = dead ? -1 : 0; tile.setAttribute("role", "button");
+        tile.setAttribute("aria-label", `${title} ${slot + 1}${dead ? " Not Used" : ""}`);
+        tile.setAttribute("aria-selected", !dead && index >= 0 && index === selectedAsset);
+        tile.setAttribute("aria-disabled", dead);
+        if (asset) {
+          if (kind === "audio") element(tile, "span", "audio-symbol", "♫"); else preview(tile, asset, true);
+          element(tile, "span", "clip-filename", asset.file.split(/[\\/]/).pop());
+          element(tile, "span", "clip-identity", dead ? "Not Used" : refs.filter(r => r.asset_index === index).map(r => r.label.replace(/[<>]/g, "")).join(" / ") || "不使用");
+          tile.classList.toggle("inactive", !dead && !active.includes(asset));
+          if (!dead) {
+            const remove = button(tile, "×", () => removeAsset(asset)); remove.className = "clip-remove"; remove.setAttribute("aria-label", `${title} ${slot + 1}を削除`);
+            const removeClick = remove.onclick; remove.onclick = event => { event.stopPropagation(); return removeClick(); };
+            const details = button(tile, "☰", () => { collect(); selectedAsset = index; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
+            details.className = "clip-details"; details.title = "Open preview and details";
+            const detailsClick = details.onclick; details.onclick = event => { event.stopPropagation(); return detailsClick(); };
+          }
+        } else element(tile, "span", "slot-add", dead ? "Not Used" : "+");
+        if (dead) element(tile, "span", "slot-lock", "🔒");
+        tile.onclick = event => {
+          event.stopPropagation(); if (dead) return;
+          collect(); selectedLane = kind; root.focus();
+          if (asset) { selectedAsset = index; render(); } else chooseFiles(kind, slot);
+        };
+        tile.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); tile.onclick(event); } };
+        drops(tile, kind, slot);
+        if (asset && !dead) tile.onpointerdown = event => {
+          if (event.button !== 0 || event.target.closest("button")) return;
+          event.stopPropagation(); collect(); selectedAsset = index; selectedLane = kind;
+          const origin = event.clientX, zoom = tile.getBoundingClientRect().width / (tile.offsetWidth || 112); let dragged = false;
+          tile.setPointerCapture?.(event.pointerId);
+          tile.onpointermove = move => { dragged ||= Math.abs(move.clientX - origin) >= 4; if (dragged) { tile.style.transform = `translateX(${(move.clientX - origin) / zoom}px)`; tile.classList.add("dragging"); } };
+          tile.onpointerup = up => {
+            tile.onpointermove = null; tile.onpointerup = null; tile.onpointercancel = null;
+            tile.style.transform = ""; tile.classList.remove("dragging");
+            if (!dragged) return;
+            const targets = [...slots.children].filter(t => t.getAttribute("aria-disabled") !== "true");
+            const distance = t => { const rect = t.getBoundingClientRect(); return Math.abs(rect.left + rect.width / 2 - up.clientX); };
+            const nearest = targets.reduce((a, b) => distance(a) < distance(b) ? a : b);
+            moveAsset(asset, Number(nearest.dataset.slot));
+          };
+          tile.onpointercancel = () => { tile.onpointermove = null; tile.onpointerup = null; tile.onpointercancel = null; tile.style.transform = ""; tile.classList.remove("dragging"); };
+        };
+      }
     }
+    media.scrollLeft = trackScroll;
     selectedAsset = Math.min(selectedAsset, scene.assets.length - 1);
     const asset = scene.assets[selectedAsset];
     if (asset) {
       const panel = element(editor, "div", "reference"); const line = element(panel, "div", "row spread");
       const enabledLabel = element(line, "label"); const enabled = element(enabledLabel, "input"); enabled.type = "checkbox"; enabled.checked = asset.enabled !== false; enabledLabel.append(" 使用する");
       enabled.onchange = () => { asset.enabled = enabled.checked; save(); render(); };
-      if (asset.kind === "image") select(line, "役割", [["reference", "R2V参照"], ["first", "始点画像"], ["last", "終点画像"]], asset.role ?? "reference", v => { asset.role = v; });
-      button(line, "差し替え", () => chooseFiles(asset.kind, asset.role ?? "reference", asset)); button(line, "削除", () => { collect(); scene.assets.splice(selectedAsset, 1); save(); render(); });
-      if (asset.kind !== "image") preview(panel, asset);
+      element(line, "span", "muted", `${LANES.find(l => l[0] === asset.kind)[1]} ${asset.slot + 1}`);
+      button(line, "差し替え", () => chooseFiles(asset.kind, asset.slot)); button(line, "削除", () => removeAsset(asset));
+      preview(panel, asset);
       if (asset.kind === "video") {
         const label = element(panel, "label"); const audio = element(label, "input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false; label.append(" 動画の音声も参照する");
         audio.onchange = () => { asset.use_audio = audio.checked; save(); render(); };
@@ -245,7 +369,7 @@ function attachDirector(node) {
       button(row, "読み込む", async () => {
         if (!confirm("編集中のシーンを保存済みシーンで置き換えますか？")) return;
         const saved = await projectRequest(project.value, "load", { id: item.id });
-        plan = readPlan(JSON.stringify(saved.plan)); scene = saved.scene; cut = 0; selectedAsset = 0; node.properties.h3_title = saved.title;
+        plan = readPlan(JSON.stringify(saved.plan)); scene = saved.scene; cut = 0; selectedAsset = -1; arrangeAssets(); node.properties.h3_title = saved.title;
         widgets.use_current_settings.value = true;
         save(); render(); switchTab(false); showResult({ video: saved.video, duration_seconds: saved.duration_seconds }, false);
         status.textContent = "保存シーンを読み込みました。生成設定は現在のworkflowを使用します。";
@@ -259,7 +383,7 @@ function attachDirector(node) {
   node.addDOMWidget("cut_editor", "custom", root, { serialize: false, hideOnZoom: false, getMinHeight: () => 600, getHeight: () => 900 });
   function restore() {
     try {
-      plan = readPlan(widgets.plan_json.value); scene = JSON.parse(widgets.scene_json.value); sceneAssets(scene);
+      plan = readPlan(widgets.plan_json.value); scene = JSON.parse(widgets.scene_json.value); sceneAssets(scene); selectedAsset = -1; arrangeAssets();
       project.value = node.properties.h3_project ?? "MyScenes"; render(); switchTab(false);
       if (node.properties.h3_result) showResult(node.properties.h3_result);
     } catch (e) { collect = () => { throw e; }; report(e); }
