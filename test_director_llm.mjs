@@ -36,6 +36,16 @@ assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).image_analysis, "Imag
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, "Scene story");
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[0].prompt, "Original A");
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).selected_cut, 2);
+assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).previous_prompt, "Original A");
+const threeCuts = { shots: [{ id: "a", prompt: "Walk to the gate" },
+  { id: "b", prompt: "Open the gate", end_state: "Woman holds the open gate with her right hand" }, { id: "c", prompt: "" }] };
+const third = draftGraph(config, scene, threeCuts, "prompt", "Enter the garden", "", 2);
+assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_prompt, "Open the gate");
+assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_end_state, threeCuts.shots[1].end_state);
+assert.match(third.writer.inputs.system_prompt, /prompt field itself, not only start_state/);
+const first = draftGraph(config, scene, threeCuts, "prompt", "Start", "", 0);
+assert.equal(JSON.parse(first.writer.inputs.custom_prompt).previous_prompt, undefined);
+assert.match(first.writer.inputs.system_prompt, /self-contained H3 prompt/);
 assert.equal(graph.result.class_type, "PreviewAny");
 assert.equal(Object.values(graph).some(n => /Sampler|SaveVideo/.test(n.class_type)), false);
 assert.deepEqual({ config, plan, scene }, before);
@@ -49,6 +59,8 @@ for (const selected of [0, 1]) {
   assert.equal(request.cuts[0].id, plan.shots[selected].id);
   assert.equal(request.scene_story, "");
   assert.equal(request.include_previous, false);
+  assert.equal(request.previous_prompt, undefined);
+  assert.equal(request.previous_end_state, undefined);
   assert.match(solo.writer.inputs.system_prompt, /self-contained H3 prompt/);
 }
 const analysis = draftGraph(config, scene, plan, "analysis", "Do not send this", "Or this", null);

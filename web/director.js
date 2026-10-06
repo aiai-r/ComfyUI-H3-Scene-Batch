@@ -173,9 +173,9 @@ function attachDirector(node) {
     story.oninput = () => { state.stories[scope] = story.value; changed(); };
     if (selected > 0) {
       const wrapper = element(section, "label"); const previous = element(wrapper, "input"); previous.type = "checkbox";
-      previous.checked = state.previous[scope] ?? true; wrapper.append(" 前カットの文章を踏まえる");
+      previous.checked = state.previous[scope] ?? true; wrapper.append(" 前カットの終了状況をPromptに含める");
       previous.onchange = () => { state.previous[scope] = previous.checked; changed(); };
-      element(section, "div", "muted", `参照元：カット ${selected}。LLMの文章作成用です。映像・音声の継続設定は変わりません。`);
+      element(section, "div", "muted", `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
     }
     const buttons = element(section, "div", "row");
     for (const [text, action] of [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]]) {
