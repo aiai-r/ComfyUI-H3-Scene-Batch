@@ -15,8 +15,11 @@ const template = { output: {
   model: { class_type: "UNETLoader", inputs: { unet_name: "current-model", weight_dtype: "default" } },
   steps: { class_type: "PrimitiveInt", inputs: { value: 12 } },
 }, workflow: { nodes: [{ id: 1200, widgets_values: ["old", "old", "old", false], properties: { keep: true } }] } };
-const app = { graphToPrompt: async () => structuredClone(template), graph: { _nodes: [] } };
-const { sceneRequest, resultNode, DirectorQueue } = new Function("app", "api", source + "\nreturn {sceneRequest,resultNode,DirectorQueue};")(app, api);
+const phases = [];
+const app = { graphToPrompt: async () => structuredClone(template), rootGraph: { _nodes: [{ widgets: [{
+  beforeQueued: () => phases.push("before"), afterQueued: () => phases.push("after"),
+}] }] } };
+const { sceneRequest, resultNode, DirectorQueue } = new Function("app", "api", "applyPromotedWidgetControl", source + "\nreturn {sceneRequest,resultNode,DirectorQueue};")(app, api, () => {});
 const record = { plan: { shots: [{ prompt: "Garden", seed: "18446744073709551615", duration_seconds: 15 }, { prompt: "Pond", seed: "0", duration_seconds: 15 }] }, scene: { mode: "T2V", assets: [] } };
 const before = structuredClone(template);
 const graph = sceneRequest(template, 1200, record, { run_name: "unique-scene" }, true);
@@ -39,4 +42,10 @@ assert.equal(queue.busy, false);
 assert.ok(calls.filter(c => c.path === "/interrupt").length >= 2);
 for (const call of calls.filter(c => c.path === "/interrupt")) assert.equal(call.body.prompt_id, promptId);
 assert.ok(!calls.some(c => c.path.startsWith("/history")));
+assert.deepEqual(phases, ["before", "after"], "An accepted prompt advances controls once even when cancelled during submission");
+phases.length = 0;
+api.fetchApi = async () => ({ ok: false, json: async () => ({ error: { message: "Rejected prompt" } }) });
+await assert.rejects(queue.generate(record), /Rejected prompt/);
+assert.deepEqual(phases, ["before"], "A rejected prompt must not advance after-queue controls");
+assert.equal(queue.busy, false);
 console.log("Director queue: saved inputs, current settings, workflow metadata and pending-registration cancellation passed.");

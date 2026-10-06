@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { applyPromotedWidgetControl } from "../../scripts/promotedWidgetControl.js";
 
 export async function projectRequest(project, action, values = {}) {
   const response = await api.fetchApi("/h3_scene_director/project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project, action, ...values }) });
@@ -38,6 +39,18 @@ export function resultNode(template, directorId) {
 
 const wait = () => new Promise(resolve => setTimeout(resolve, 1200));
 
+function queueNodes(graph) {
+  return graph._nodes.flatMap(node => node.isSubgraphNode?.()
+    ? [...queueNodes(node.subgraph), node] : [node]);
+}
+
+function controlWidgets(nodes, phase) {
+  for (const node of nodes) {
+    for (const widget of node.widgets ?? []) widget[phase]?.({ isPartialExecution: false });
+    applyPromotedWidgetControl(node, phase);
+  }
+}
+
 export class DirectorQueue {
   constructor(node, notify, showResult) {
     this.node = node; this.notify = notify; this.showResult = showResult;
@@ -48,7 +61,8 @@ export class DirectorQueue {
     if (this.busy) throw new Error("このDirectorは実行中です。");
     this.busy = true; this.stopped = false;
     try {
-      for (const node of app.graph._nodes) for (const widget of node.widgets ?? []) widget.beforeQueued?.({ isPartialExecution: false });
+      const nodes = queueNodes(app.rootGraph);
+      controlWidgets(nodes, "beforeQueued");
       const template = await app.graphToPrompt();
       const output = resultNode(template, this.node.id);
       const attempt = { prompt_id: crypto.randomUUID(), run_name: "director_" + crypto.randomUUID().replaceAll("-", "").slice(0, 16) };
@@ -56,8 +70,8 @@ export class DirectorQueue {
       this.node.properties.h3_pending = { prompt_id: attempt.prompt_id, node_id: output };
       this.notify("生成中：シーン全体を生成しています。");
       await submitScene(value, attempt.prompt_id);
+      controlWidgets(nodes, "afterQueued");
       if (this.stopped) { await this.stop(); return; }
-      for (const node of app.graph._nodes) for (const widget of node.widgets ?? []) widget.afterQueued?.();
       await this.watch(attempt.prompt_id, output);
     } finally { this.busy = false; }
   }
