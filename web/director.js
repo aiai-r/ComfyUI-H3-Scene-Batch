@@ -61,7 +61,7 @@ function attachDirector(node) {
   const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
   button(toolbar, "中止", () => queue.project || queue.busy || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
   let plan, scene, cut = 0, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
-  let uploading = false, trackScroll = 0;
+  let uploading = false, trackScroll = 0, pastedPlan = "";
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
 
   function element(parent, tag, className = "", text = "") { const e = document.createElement(tag); e.className = className; e.textContent = text; parent.append(e); return e; }
@@ -180,6 +180,12 @@ function attachDirector(node) {
   function chooseFiles(kind, slot = null) {
     const file = document.createElement("input"); file.type = "file"; file.accept = `${kind}/*`; file.multiple = slot == null || !assetAt(kind, slot);
     file.onchange = () => upload([...file.files], kind, slot).catch(report); file.click();
+  }
+  function importPlan(text) {
+    const imported = readPlan(text);
+    if (!confirm("編集中のカットを読み込んだPlanで置き換えますか？")) return;
+    plan = imported; cut = 0; pastedPlan = ""; widgets.use_current_settings.value = false;
+    save(); render(); status.textContent = `Plan JSONを読み込みました（${plan.shots.length}カット）。`;
   }
 
   function render() {
@@ -332,8 +338,11 @@ function attachDirector(node) {
     };
     for (const field of [prefix, seconds, prompt, id, seed, start, end]) field.oninput = () => { try { collect(); save(); error.textContent = ""; } catch (e) { report(e); } };
     const importing = element(editor, "details"); element(importing, "summary", "", "Plan JSONを読み込む");
+    const pasted = input(importing, "Plan JSONを貼り付け", pastedPlan, true); pasted.rows = 6; pasted.spellcheck = false;
+    pasted.oninput = () => { pastedPlan = pasted.value; };
+    button(importing, "貼り付けたJSONを読み込む", () => importPlan(pasted.value));
     const file = element(importing, "input"); file.type = "file"; file.accept = ".json,application/json";
-    file.onchange = async () => { try { if (!file.files[0]) return; const imported = readPlan(await file.files[0].text()); if (confirm("編集中のカットを読み込んだPlanで置き換えますか？")) { plan = imported; cut = 0; widgets.use_current_settings.value = false; save(); render(); } } catch (e) { report(e); } };
+    file.onchange = async () => { error.textContent = ""; try { if (file.files[0]) importPlan(await file.files[0].text()); } catch (e) { report(e); } };
   }
 
   function showResult(result, canAdopt = true) {
