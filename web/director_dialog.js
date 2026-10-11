@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey } from "./director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
 
 export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
@@ -103,7 +103,7 @@ export function openLLMSettings(node) {
   const config = node.properties.h3_llm;
   if (!config) throw new Error("LLM設定がありません。開発workflowを開いてください。");
   const dialog = document.createElement("dialog");
-  dialog.style.cssText = "width:min(650px,90vw);max-height:85vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:20px";
+  dialog.style.cssText = "width:min(900px,90vw);max-height:85vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:20px";
   const title = document.createElement("h3"); title.textContent = "LLM設定"; dialog.append(title);
   const model = document.createElement("p"); model.textContent = config.loader.model; dialog.append(model);
   for (const [stage, name] of [["story", "ストーリー"], ["prompt", "Prompt・画像解析の整理"]]) {
@@ -121,6 +121,68 @@ export function openLLMSettings(node) {
       row.append(input); dialog.append(row);
     }
   }
+  const heading = document.createElement("h3"); heading.textContent = "システムPrompt"; dialog.append(heading);
+  const help = document.createElement("p");
+  help.textContent = "対象ごとに編集して「保存」で適用します。「標準に戻す」は選択中のPromptだけをリセットします。変更はworkflow内に保持されるため、workflowも保存してください。保存せず閉じた編集は破棄されます。";
+  dialog.append(help);
+  const select = document.createElement("select"); select.setAttribute("aria-label", "システムPromptの対象");
+  for (const [key, value] of Object.entries(SYSTEM_PROMPTS)) {
+    const option = document.createElement("option"); option.value = key; option.textContent = value.label; select.append(option);
+  }
+  dialog.append(select);
+  const editor = document.createElement("textarea"); editor.rows = 16; editor.spellcheck = false;
+  editor.setAttribute("aria-label", "システムPrompt本文"); editor.style.cssText = "display:block;width:100%;box-sizing:border-box;margin:10px 0;resize:vertical";
+  dialog.append(editor);
+  const variables = document.createElement("p");
+  variables.textContent = "{{mode_instructions}} はモードの指示、{{continuity_instructions}} は前カット説明の指示、{{output_instructions}} は対象カットと出力形式に展開されます。下の展開例で全文を確認できます。必要に応じて変数も本文に置き換えて編集できます。Prompt作成では shots / prompt のJSON出力形式を維持してください。";
+  dialog.append(variables);
+  const status = document.createElement("p"); status.setAttribute("role", "status"); dialog.append(status);
+  const save = document.createElement("button"); save.textContent = "保存"; dialog.append(save);
+  const reset = document.createElement("button"); reset.textContent = "標準に戻す"; dialog.append(reset);
+  const details = document.createElement("details"); const summary = document.createElement("summary");
+  summary.textContent = "送信されるシステムPromptの展開例"; details.append(summary); dialog.append(details);
+  const mode = document.createElement("select"); mode.setAttribute("aria-label", "展開例のモード");
+  for (const name of ["R2V", "T2V", "I2V", "L2V", "FL2V"]) {
+    const option = document.createElement("option"); option.value = name; option.textContent = name; mode.append(option);
+  }
+  mode.value = JSON.parse(node.widgets?.find(w => w.name === "scene_json")?.value ?? '{"mode":"R2V"}').mode;
+  details.append(mode);
+  const check = (text, checked) => {
+    const label = document.createElement("label"), input = document.createElement("input");
+    input.type = "checkbox"; input.checked = checked; label.append(input, text); details.append(label); return input;
+  };
+  const partial = check("選択カットのみ", true), continuation = check("前カット説明あり", false);
+  const preview = document.createElement("textarea"); preview.readOnly = true; preview.rows = 12;
+  preview.setAttribute("aria-label", "送信Promptの展開例"); preview.style.cssText = editor.style.cssText; details.append(preview);
+  const drafts = {};
+  function renderPreview() {
+    const key = select.value;
+    const selectedMode = key === "prompt_r2v" ? "R2V" : key === "prompt_base" && mode.value === "R2V" ? "T2V" : mode.value;
+    mode.value = selectedMode; mode.disabled = key === "analysis" || key === "prompt_r2v";
+    mode.options[0].disabled = key === "prompt_base";
+    partial.disabled = continuation.disabled = key === "analysis";
+    preview.value = renderSystemPrompt({ system_prompts: { [key]: editor.value } }, selectedMode,
+      key.startsWith("prompt_") ? "prompt" : key, partial.checked, continuation.checked);
+  }
+  function showPrompt() {
+    editor.value = drafts[select.value] ?? config.system_prompts?.[select.value] ?? SYSTEM_PROMPTS[select.value].text;
+    status.textContent = drafts[select.value] !== undefined ? "未保存の編集があります。" : config.system_prompts?.[select.value] !== undefined ? "保存済みのPrompt" : "標準のPrompt";
+    renderPreview();
+  }
+  select.onchange = showPrompt;
+  editor.oninput = () => { drafts[select.value] = editor.value; status.textContent = "未保存の編集があります。"; renderPreview(); };
+  for (const input of [mode, partial, continuation]) input.onchange = renderPreview;
+  save.onclick = () => {
+    const key = select.value;
+    const prompts = config.system_prompts ??= {};
+    if (editor.value === SYSTEM_PROMPTS[key].text) delete prompts[key]; else prompts[key] = editor.value;
+    delete drafts[key]; node.graph?.change(); status.textContent = "保存しました。workflowも保存してください。";
+  };
+  reset.onclick = () => {
+    delete config.system_prompts?.[select.value]; delete drafts[select.value];
+    node.graph?.change(); showPrompt(); status.textContent = "標準に戻しました。workflowも保存してください。";
+  };
+  select.value = "analysis"; showPrompt();
   const close = document.createElement("button"); close.textContent = "閉じる"; close.onclick = () => dialog.close(); dialog.append(close);
   dialog.addEventListener("close", () => dialog.remove(), { once: true }); document.body.append(dialog); dialog.showModal();
 }

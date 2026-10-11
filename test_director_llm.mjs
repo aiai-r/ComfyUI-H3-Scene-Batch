@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, SYSTEM_PROMPTS } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -113,6 +113,32 @@ for (const [mode, role] of [["R2V", "reference"], ["I2V", "first"], ["L2V", "las
   assert.equal(key, await imageAnalysisKey(config, { mode, assets: [{ kind: "image", role, file: "another-folder/renamed.png", note: "New note" }] }, async () => bytes("first")));
 }
 assert.notEqual(key, await imageAnalysisKey({ ...config, prompt: { ...config.prompt, parameters: { temperature: 0.2 } } }, scene, async () => bytes("first")));
+const customConfig = JSON.parse(JSON.stringify({ ...config, system_prompts: {
+  analysis: "Custom observations in English.", story: "Custom story. {{output_instructions}}",
+  prompt_r2v: "Custom references. {{continuity_instructions}}\n{{output_instructions}}",
+  prompt_base: "Custom base. {{mode_instructions}}\n{{continuity_instructions}}\n{{output_instructions}}",
+} }));
+assert.equal(draftGraph(customConfig, scene, plan, "analysis", "", "").writer.inputs.system_prompt, "Custom observations in English.");
+for (const mode of ["R2V", "T2V", "I2V", "L2V", "FL2V"]) {
+  const output = draftGraph(customConfig, { ...scene, mode }, plan, "prompt", "", "", 0).writer.inputs.system_prompt;
+  assert.ok(output.startsWith(mode === "R2V" ? "Custom references." : "Custom base."));
+  assert.doesNotMatch(output, /\{\{/);
+  assert.match(output, /self-contained H3 prompt/);
+  assert.match(output, /Return ONLY JSON/);
+  assert.match(draftGraph(customConfig, { ...scene, mode }, plan, "story", "", "").writer.inputs.system_prompt, /^Custom story\. Return a concise editable story/);
+  if (mode === "T2V") assert.doesNotMatch(output, /image|reference|last_frame/);
+  if (mode === "R2V") assert.doesNotMatch(output, /anchors|last_frame/);
+  if (mode === "L2V") assert.match(output, /only the ending of the final cut/);
+}
+assert.match(draftGraph(customConfig, scene, plan, "prompt", "", "", 1).writer.inputs.system_prompt, /previous_end_state/);
+assert.notEqual(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")));
+delete customConfig.system_prompts.analysis;
+assert.equal(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")), "Writing prompt edits do not invalidate image analysis; resetting analysis reuses the default cache");
+customConfig.system_prompts.analysis = SYSTEM_PROMPTS.analysis.text;
+assert.equal(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")));
+delete customConfig.system_prompts.prompt_r2v;
+assert.equal(draftGraph(customConfig, scene, plan, "prompt", "", "").writer.inputs.system_prompt,
+  draftGraph(config, scene, plan, "prompt", "", "").writer.inputs.system_prompt);
 await imageAnalysisKey(config, { mode: "I2V", assets: [{ kind: "image", role: "first", file: "folder\\image.png [output]" }] }, async path => {
   const query = new URL(path, "http://localhost").searchParams;
   assert.equal(query.get("filename"), "image.png"); assert.equal(query.get("subfolder"), "folder"); assert.equal(query.get("type"), "output");

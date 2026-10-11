@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { readPlan, updateCut } from "./web/director_plan.js";
-import { sceneAssets, referenceDescriptions, applyDraft, draftGraph, readDraft, imageAnalysisKey } from "./web/director_llm.js";
+import { sceneAssets, referenceDescriptions, applyDraft, draftGraph, readDraft, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./web/director_llm.js";
 
 if (!process.env.H3_DOM_MODULE) {
   console.log("Director UI DOM check skipped: set H3_DOM_MODULE to linkedom/esm/index.js.");
@@ -326,3 +326,51 @@ assert.equal(field('カット 1 のPrompt').value, plan.shots[0].prompt);
 assert.equal(node.widgets.find(w => w.name === 'use_current_settings').value, true);
 assert.equal(root.querySelector('.result-video'), null, 'A project without previews still loads for editing/generation');
 console.log('Director project UI: absolute path, numbered scenes, start position, missing previews and persisted failure position passed.');
+
+window.HTMLElement.prototype.showModal = function () { this.setAttribute('open', ''); };
+window.HTMLElement.prototype.close = function () { this.dispatchEvent(new window.Event('close')); };
+const openSettings = new Function('document', 'SYSTEM_PROMPTS', 'renderSystemPrompt', llmSource + '\nreturn openLLMSettings;')(
+  document, SYSTEM_PROMPTS, renderSystemPrompt);
+openSettings(node);
+let settings = document.querySelector('dialog');
+const target = settings.querySelector('[aria-label="システムPromptの対象"]');
+const promptEditor = settings.querySelector('[aria-label="システムPrompt本文"]');
+const promptPreview = settings.querySelector('[aria-label="送信Promptの展開例"]');
+const settingsButton = text => [...settings.querySelectorAll('button')].find(b => b.textContent === text);
+assert.equal(promptEditor.value, SYSTEM_PROMPTS.analysis.text);
+assert.equal(promptPreview.value, promptEditor.value);
+promptEditor.value = 'Custom English analysis.'; promptEditor.oninput();
+assert.equal(node.properties.h3_llm.system_prompts, undefined, 'Editing is not saved until Save');
+target.value = 'story'; target.onchange();
+assert.equal(promptEditor.value, SYSTEM_PROMPTS.story.text);
+target.value = 'analysis'; target.onchange();
+assert.equal(promptEditor.value, 'Custom English analysis.', 'Switching targets retains unsaved edits within the dialog');
+settingsButton('保存').onclick();
+assert.equal(node.properties.h3_llm.system_prompts.analysis, 'Custom English analysis.');
+for (const key of ['story', 'prompt_r2v', 'prompt_base']) {
+  target.value = key; target.onchange();
+  promptEditor.value += '\nCustom ' + key; promptEditor.oninput(); settingsButton('保存').onclick();
+  assert.ok(promptPreview.value.endsWith('Custom ' + key));
+  assert.doesNotMatch(promptPreview.value, /\{\{/);
+}
+const modePreview = settings.querySelector('[aria-label="展開例のモード"]');
+modePreview.value = 'L2V'; modePreview.onchange();
+assert.match(promptPreview.value, /only the ending of the final cut/);
+assert.equal(promptPreview.value, draftGraph(node.properties.h3_llm, { mode: 'L2V', assets: [] }, plan, 'prompt', '', '', 0).writer.inputs.system_prompt);
+const savedPrompts = structuredClone(node.properties.h3_llm.system_prompts);
+promptEditor.value = 'Unsaved edit'; promptEditor.oninput();
+settingsButton('閉じる').onclick();
+assert.equal(document.querySelector('dialog'), null);
+node.properties = JSON.parse(JSON.stringify(node.properties));
+openSettings(node); settings = document.querySelector('dialog');
+assert.equal(settings.querySelector('textarea').value, savedPrompts.analysis);
+assert.deepEqual(node.properties.h3_llm.system_prompts, savedPrompts, 'Workflow round trip preserves every saved prompt and discards the unsaved edit');
+settingsButton('標準に戻す').onclick();
+assert.equal(settings.querySelector('textarea').value, SYSTEM_PROMPTS.analysis.text);
+assert.equal(node.properties.h3_llm.system_prompts.analysis, undefined);
+for (const key of ['story', 'prompt_r2v', 'prompt_base']) assert.equal(node.properties.h3_llm.system_prompts[key], savedPrompts[key], 'Reset affects only the selected prompt');
+settingsButton('閉じる').onclick();
+openSettings(node); settings = document.querySelector('dialog');
+assert.equal(settings.querySelector('textarea').value, SYSTEM_PROMPTS.analysis.text, 'Reset survives reopening');
+settingsButton('閉じる').onclick();
+console.log('Director LLM settings UI: defaults, edits, save, workflow persistence, preview, unsaved close and per-target reset passed.');
