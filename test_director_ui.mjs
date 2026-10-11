@@ -22,6 +22,7 @@ Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectVa
 let extension, draftOpened = false, queuedRecord;
 const uploaded = [];
 const llmCalls = [], history = new Map();
+const projectCalls = [];
 let promptOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
@@ -58,7 +59,8 @@ const source = (await readFile(new URL("./web/director.js", import.meta.url), "u
 const llmSource = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", llmSource + '\nreturn DirectorLLM;')(api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey);
 new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", source)(
-  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, LLM, () => { draftOpened = true; }, Queue, async () => ({ scenes: [], batch: null, directory: "test" }), () => true);
+  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, LLM, () => { draftOpened = true; }, Queue,
+  async (project, action) => { projectCalls.push({ project, action }); return { scenes: [], batch: null, directory: "test" }; }, () => true);
 await extension.beforeRegisterNodeDef(Node, { name: "H3SceneDirector" });
 const node = new Node(); node.onNodeCreated();
 const root = node.element;
@@ -67,6 +69,11 @@ const byText = text => [...root.querySelectorAll("button")].find(b => b.textCont
 const field = text => [...root.querySelectorAll("label")].find(l => l.querySelector(".label")?.textContent === text)?.querySelector("input,textarea,select");
 const assertHealthy = () => assert.equal(root.querySelector('[role="alert"]').textContent, "");
 assertHealthy();
+field('プロジェクト').value = 'My current project';
+await byText('開く').onclick(); assertHealthy();
+assert.deepEqual(projectCalls.at(-1), { project: 'My current project', action: 'open' });
+assert.match(root.querySelector('[role="status"]').textContent, /保存先を開きました：test/);
+assert.equal(byText('開く').parentElement, field('プロジェクト').parentElement.parentElement);
 assert.equal(root.querySelectorAll(".prompt").length, 1);
 field("カット 1 のPrompt").value = "Edited first"; field("カット 1 のPrompt").oninput();
 await root.querySelector('[aria-label="カット 2"]').onclick();

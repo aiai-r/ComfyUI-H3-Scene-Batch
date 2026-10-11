@@ -47,6 +47,11 @@ function attachDirector(node) {
   const top = element(root, "div", "row");
   const project = input(top, "プロジェクト", node.properties.h3_project ?? "MyScenes");
   project.onchange = () => { node.properties.h3_project = project.value; changed(); };
+  const openProject = button(top, "開く", async () => {
+    const data = await projectRequest(project.value, "open");
+    status.textContent = `保存先を開きました：${data.directory}`;
+  });
+  openProject.title = "プロジェクトの保存フォルダーを開く"; openProject.style.alignSelf = "flex-end";
   const tabs = element(root, "div", "tabs section");
   const createTab = button(tabs, "作成", () => switchTab(false));
   const libraryTab = button(tabs, "保存済み・一括生成", () => { switchTab(true); return refreshLibrary(); });

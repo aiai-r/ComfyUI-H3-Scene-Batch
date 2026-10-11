@@ -2,6 +2,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import re
 import shutil
 import threading
@@ -199,6 +200,13 @@ def project_action(data, queue):
     root = project_path(data['project'])
     action = data.get('action', 'list')
     with PROJECT_LOCK:
+        if action == 'open':
+            if os.name != 'nt':
+                raise ValueError("フォルダを開く機能はWindows上のComfyUIで利用できます。")
+            if not root.is_dir():
+                raise ValueError(f"保存先フォルダがありません。先にシーンを採用保存してください。保存先：{root}")
+            os.startfile(str(root), 'explore')
+            return {'directory': str(root)}
         if action == 'list':
             items = records(root)
             return {'scenes': [{'id': s['id'], 'title': s['title'], 'mode': s['scene']['mode'], 'cuts': len(s['plan']['shots']),

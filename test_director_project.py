@@ -107,6 +107,29 @@ class DirectorProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '変更'): self.action('adopt', prompt_id='good', node_id='1211')
         self.assertEqual(self.action('list')['scenes'], [])
 
+    @unittest.skipUnless(project.os.name == 'nt', 'Windows Explorer')
+    def test_open_project_folder(self):
+        root = project.project_path('test')
+        with patch.object(project.os, 'startfile') as open_folder:
+            with self.assertRaisesRegex(ValueError, '採用保存'):
+                self.action('open')
+            self.assertFalse(root.exists())
+            root.parent.mkdir(parents=True)
+            root.write_text('not a directory')
+            with self.assertRaisesRegex(ValueError, '保存先フォルダがありません'):
+                self.action('open')
+            root.unlink()
+            for name in ('../escape', 'C:\\Windows', 'bad/name'):
+                with self.assertRaises(ValueError):
+                    project.project_action({'project': name, 'action': 'open'}, self.queue)
+            open_folder.assert_not_called()
+            root.mkdir()
+            (root / 'scenes.json').write_text('[]')
+            self.assertEqual(self.action('open'), {'directory': str(root)})
+            open_folder.assert_called_once_with(str(root), 'explore')
+            self.assertEqual((root / 'scenes.json').read_text(), '[]')
+            self.assertFalse((root / 'batch.json').exists())
+
     def test_batch_success_failure_resume_changes_run_and_keeps_saved_files(self):
         ids = [self.save('first'), self.save('second', 'T2V')]
         manifest = project.project_path('test') / 'scenes.json'
