@@ -239,7 +239,21 @@ assert.deepEqual(queuedRecord.plan, generated);
 node.onConfigure(); assertHealthy();
 assert.deepEqual(JSON.parse(planWidget.serializeValue()), generated);
 
-for (const output of ['{"shots":[{""start_state":"broken"}]}', '{"shots":[{"id":"cut2","prompt":"Wrong cut"}]}']) {
+for (const output of [
+  '{"shots":[{"id":"cut2","prompt":"Recovered second cut",""start_state":"Start",""end_state":"End"}]}',
+  '{"shots":[{"prompt":"Recovered second cut","end_state":"unfinished',
+]) {
+  promptOutput = output;
+  await byText('Prompt作成').onclick(); assertHealthy();
+  assert.equal(field('カット 2 のPrompt').value, 'Recovered second cut');
+  const recovered = JSON.parse(planWidget.serializeValue());
+  assert.deepEqual(recovered.shots[0], generated.shots[0]);
+  assert.equal(recovered.shots[1].id, 'cut3');
+  await byText('このシーンを生成').onclick(); assertHealthy();
+  assert.equal(queuedRecord.plan.shots[1].prompt, 'Recovered second cut');
+}
+planWidget.value = JSON.stringify(generated); node.onConfigure();
+for (const output of ['{"shots":[{""start_state":"broken"}]}', '{"shots":[{"prompt":"unfinished', '{"shots":[{"prompt":""}]}']) {
   promptOutput = output;
   await byText('Prompt作成').onclick();
   assert.ok(root.querySelector('[role="alert"]').textContent);

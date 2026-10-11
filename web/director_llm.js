@@ -68,7 +68,7 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
     "When story is absent, follow the user's instruction directly without adding an unsolicited plot.",
     action === "story"
       ? `Return a concise editable story outline in the language of the instruction, with a beginning/action/ending for ${partial ? "only the selected cut" : "each supplied cut"}. Return only the outline.`
-      : 'Return ONLY JSON: {"shots":[{"id":"existing id","prompt":"English H3 prompt","start_state":"...","end_state":"..."}]}. No markdown, no seeds, no durations, no extra cuts.',
+      : `Return ONLY JSON: {"shots":[{${partial ? "" : '"id":"existing id",'}"prompt":"English H3 prompt","start_state":"...","end_state":"..."}]}. No markdown, no seeds, no durations, no extra cuts.`,
     partial ? "Return only the selected cut. Other cuts are context only; do not rewrite them." : "",
   ].filter(Boolean).join("\n");
   const references = referenceDescriptions(scene);
@@ -96,13 +96,36 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
 }
 
 export function readDraft(text, plan, selected = null) {
-  const source = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, ""));
+  const content = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  let source;
+  try { source = JSON.parse(content); }
+  catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    // Some LLM responses double the opening quote on JSON field names.
+    const repaired = content.replace(/([{,]\s*)""(shots|id|prompt|start_state|end_state)"\s*:/g, '$1"$2":');
+    try { source = JSON.parse(repaired); }
+    catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      if (selected == null) throw new Error("LLMの返答形式を補正できませんでした。Promptを再作成してください。");
+      const fields = [...repaired.matchAll(/[{,]\s*"(prompt|start_state|end_state)"\s*:\s*("(?:\\.|[^"\\])*")(?=\s*[,}\]]|\s*$)/g)];
+      // Recover only complete JSON strings from a single-cut response.
+      if ([...repaired.matchAll(/[{,]\s*"prompt"\s*:/g)].length !== 1 || fields.filter(m => m[1] === "prompt").length !== 1) {
+        throw new Error("LLMの返答から完全なPromptを取り出せませんでした。再作成してください。");
+      }
+      const cut = {};
+      for (const [, key, value] of fields) {
+        try { cut[key] = JSON.parse(value); }
+        catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+      }
+      source = { shots: [cut] };
+    }
+  }
   const indexes = selected == null ? plan.shots.map((_, i) => i) : [selected];
-  if (!Array.isArray(source.shots) || source.shots.length !== indexes.length) throw new Error("LLMのカット数が指定と一致しません。指示を確認して再作成してください。");
+  if (!Array.isArray(source?.shots) || source.shots.length !== indexes.length) throw new Error("LLMのカット数が指定と一致しません。指示を確認して再作成してください。");
   return indexes.map((index, i) => {
     const cut = source.shots[i];
     const id = plan.shots[index].id ?? `cut${index + 1}`;
-    if (cut.id !== id || typeof cut.prompt !== "string" || !cut.prompt.trim()) throw new Error(`カット ${index + 1} のIDまたはPromptが不正です。`);
+    if (!cut || selected == null && cut.id !== id || typeof cut.prompt !== "string" || !cut.prompt.trim()) throw new Error(`カット ${index + 1} のIDまたはPromptが不正です。`);
     return { index, prompt: cut.prompt, start_state: String(cut.start_state ?? ""), end_state: String(cut.end_state ?? "") };
   });
 }

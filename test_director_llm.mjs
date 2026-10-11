@@ -37,6 +37,7 @@ assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, "Scene s
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[0].prompt, "Original A");
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).selected_cut, 2);
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).previous_prompt, "Original A");
+assert.match(graph.writer.inputs.system_prompt, /Return ONLY JSON: \{"shots":\[\{"prompt":/);
 const threeCuts = { shots: [{ id: "a", prompt: "Walk to the gate" },
   { id: "b", prompt: "Open the gate", end_state: "Woman holds the open gate with her right hand" }, { id: "c", prompt: "" }] };
 const third = draftGraph(config, scene, threeCuts, "prompt", "Enter the garden", "", 2);
@@ -96,7 +97,31 @@ assert.equal(applied.shots[1].seed, "0");
 assert.equal(applied.shots[1].duration_seconds, 15);
 assert.equal(applied.shots[1].prompt, "Continues from A");
 assert.deepEqual(plan, before.plan);
-assert.throws(() => readDraft('{"shots":[{"id":"wrong","prompt":"x"}]}', plan, 1), /ID/);
+assert.deepEqual(readDraft('{"shots":[{"id":"wrong","prompt":"x"}]}', plan, 1), [{ index: 1, prompt: "x", start_state: "", end_state: "" }]);
+assert.equal(readDraft('{"shots":[{"prompt":"No generated ID"}]}', plan, 1)[0].index, 1);
+const repaired = readDraft('{"shots":[{"id":"a","prompt":"Continue from the gate.",""start_state":"At gate",""end_state":"Inside garden"}]}', plan, 1);
+assert.deepEqual(repaired, [{ index: 1, prompt: "Continue from the gate.", start_state: "At gate", end_state: "Inside garden" }]);
+const repairedPlan = applyDraft(plan, structuredClone(plan), repaired);
+assert.deepEqual(repairedPlan.shots[0], plan.shots[0]);
+assert.equal(repairedPlan.shots[1].id, "b");
+assert.equal(repairedPlan.shots[1].prompt, "Continue from the gate.");
+const exact = 'She says "Hello", then passes a sign reading "prompt": "example". Path C:\\garden.\nNext line.';
+const promptOnly = JSON.stringify({ shots: [{ prompt: exact }] });
+assert.equal(readDraft(promptOnly, plan, 1)[0].prompt, exact);
+assert.equal(readDraft(promptOnly.slice(0, -2), plan, 1)[0].prompt, exact, "Recover complete text when the JSON closing brackets are missing");
+assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","end_state":"unfinished', plan, 1)[0].prompt, "Intact text.");
+assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","start_state":"bad\\q"}]}', plan, 1)[0].start_state, "");
+for (const broken of [
+  '{"shots":[{"prompt":"unfinished',
+  '{"shots":[{"prompt":"Text with "unescaped" quotes"}]}',
+  '{"shots":[{"prompt":"bad\\q"}]}',
+  '{"shots":[{"prompt":"One"},{"prompt":"Two"}',
+  '{"shots":[{"prompt":""}]}',
+  '{"shots":[null]}',
+  'null',
+]) assert.throws(() => readDraft(broken, plan, 1));
+assert.throws(() => readDraft('{"shots":[{"id":"wrong","prompt":"One"},{"id":"b","prompt":"Two"}]}', plan), /ID/);
+assert.throws(() => readDraft('{"shots":[{"prompt":"Intact text.","end_state":"unfinished', plan));
 assert.throws(() => readDraft('{"shots":[]}', plan), /カット数/);
 assert.throws(() => applyDraft({ ...plan, prompt_prefix: "Manual edit" }, plan, draft), /変更/);
-console.log("PASS: LLM settings, scoped graph, reference mapping, continuity context, reviewed apply, and stale-draft protection.");
+console.log("PASS: LLM settings, scoped graph, continuity, script-owned cut selection, JSON recovery, exact prompt preservation and concurrent-edit protection.");
