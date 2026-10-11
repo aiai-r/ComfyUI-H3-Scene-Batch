@@ -158,22 +158,31 @@ def adopt(root, queue, prompt_id, node_id, title):
     scene = result['scene']
     scene.pop('output', None)
     execution = scene.pop('execution')
+    shared = {}
+    for item in items:
+        for index, asset in enumerate(item['scene']['assets']):
+            digest = item['execution']['asset_hashes'].get(str(index))
+            if digest and asset.get('file'):
+                shared.setdefault(digest, asset['file'])
     assets = []
     for index, asset in enumerate(scene['assets']):
         if not asset.get('file'):
             continue
         source = reference_path(asset['file'])
-        if file_digest(source) != execution['asset_hashes'].get(str(index)):
+        digest = file_digest(source)
+        if digest != execution['asset_hashes'].get(str(index)):
             raise ValueError("生成後に参照素材が変更されています。生成時の素材へ戻してから保存してください。")
-        relative = f'assets/{identity}/{index:03d}{source.suffix}'
-        assets.append((source, contained(root, relative), asset, relative, execution['asset_hashes'][str(index)]))
+        relative = shared.get(digest, f'assets/{digest}{source.suffix.lower()}')
+        shared[digest] = relative
+        assets.append((source, contained(root, relative), asset, relative, digest))
     video = result['video']
     source_video = video_file(video)
     for source, destination, asset, relative, digest in assets:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        if not destination.exists():
+            shutil.copy2(source, destination)
         if file_digest(destination) != digest:
-            raise ValueError("コピー中に参照素材が変更されました。再生成してから保存してください。")
+            raise ValueError("保存先の参照素材が生成時の内容と一致しません。素材を確認してください。")
         asset['file'] = relative
     preview = f'previews/{identity}{source_video.suffix}'
     destination = contained(root, preview)
@@ -205,6 +214,7 @@ def refresh_batch(root, queue):
     if not path.exists():
         return None
     state = json.loads(path.read_text(encoding='utf-8'))
+    previous = copy.deepcopy(state)
     for completed in state['completed']:
         if 'project' in completed.get('video', {}):
             completed['video']['project'] = str(root)
@@ -235,7 +245,8 @@ def refresh_batch(root, queue):
         state['status'] = 'stopped' if state['status'] == 'stopping' else 'error'
         state['error'] = '実行履歴がありません。未完了シーンから再開してください。'
         state['attempt'] = None
-    write_json(path, state)
+    if state != previous:
+        write_json(path, state)
     return state
 
 

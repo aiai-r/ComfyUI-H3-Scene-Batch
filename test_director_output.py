@@ -11,7 +11,8 @@ import av
 import torch
 
 from test_media import package
-from remove_director_checkpoints import migrate, connect_project_outputs
+from remove_director_checkpoints import migrate, connect_project_outputs, director_loop
+from comfy_execution.graph import DynamicPrompt
 
 output = importlib.import_module(package.__name__ + '.director_output')
 project = importlib.import_module(package.__name__ + '.director_project')
@@ -36,6 +37,9 @@ class DirectorOutputTests(unittest.TestCase):
         self.enterContext(patch.dict(output.nodes.NODE_CLASS_MAPPINGS, {'MiniMaxH3ChainLoopEnd': self.chain.MiniMaxH3ChainLoopEnd}))
         self.enterContext(patch.object(self.chain, '_st_save', side_effect=AssertionError('No checkpoint writes')))
         self.enterContext(patch.object(self.chain, '_st_load', side_effect=AssertionError('No checkpoint reads')))
+        self.enterContext(patch.object(self.chain, '_load_run_editorial', side_effect=AssertionError('No editorial reads')))
+        self.enterContext(patch.object(self.chain, '_run_archive_paths', side_effect=AssertionError('No archive checks')))
+        self.enterContext(patch.object(self.chain, '_run_dir', side_effect=AssertionError('No Context Loop output access')))
 
     def test_two_cut_audio_video_and_live_continuity_without_checkpoints(self):
         for external in (False, True):
@@ -58,7 +62,7 @@ class DirectorOutputTests(unittest.TestCase):
             base_seed=1, segment_crf=18, video_blend_frames=0)[0]
         state = chain.MiniMaxH3ChainLoopStart().start(plan, 1)[1]
         latent = {'samples': [torch.ones(1, 32, 18, 8, 8), torch.ones(1, 8, 2, 122)]}
-        end = chain.MiniMaxH3ChainLoopEnd()
+        end = output.H3SceneLoopEnd()
         delivered, original_audio = [], []
         for index in (1, 2):
             shot = plan['shots'][index - 1]
@@ -79,7 +83,7 @@ class DirectorOutputTests(unittest.TestCase):
                 'delivered_frames': frames, 'raw_frames': shot['raw_frames'],
                 'repeated_frames': shot['raw_frames'] - frames, 'mode': segment['continuation_mode']})
             if index == 1:
-                with patch.object(end, '_recurse', side_effect=lambda flow, next_state, *args: next_state):
+                with patch.object(chain.MiniMaxH3ChainLoopEnd, '_recurse', side_effect=lambda flow, next_state, *args: next_state):
                     next_state = end.end(['start', 0], state, images, latent, segment)
                 torch.testing.assert_close(next_state['previous_frames'], images[-39:])
                 torch.testing.assert_close(next_state['previous_latent']['samples'][0], latent['samples'][0])
@@ -119,6 +123,57 @@ class DirectorOutputTests(unittest.TestCase):
             output.H3SceneAssemble().assemble(manifest, '../../../../../escape', 256, scene)
         with self.assertRaises(ValueError):
             output.run_directory({'output': {**destination, 'directory': '../escape'}}, 'trial')
+
+    def test_director_loop_recurses_without_cloning_final_outputs(self):
+        graph = {
+            'start': {'class_type': 'MiniMaxH3ChainLoopStart', 'inputs': {'plan': ['director', 0], 'start_clip': 1}},
+            'director': {'class_type': 'H3SceneDirector', 'inputs': {}},
+            'current': {'class_type': 'MiniMaxH3ChainCurrent', 'inputs': {'state': ['start', 1]}},
+            'sampler': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['current', 5]}},
+            'decode': {'class_type': 'VAEDecode', 'inputs': {'samples': ['sampler', 0]}},
+            'save': {'class_type': 'H3SceneSegmentSave', 'inputs': {'state': ['current', 0], 'images': ['decode', 0], 'scene': ['director', 2]}},
+            'end': {'class_type': 'H3SceneLoopEnd', 'inputs': {'flow': ['start', 0], 'state': ['current', 0],
+                    'images': ['decode', 0], 'sampled_latent': ['sampler', 0], 'segment': ['save', 0]}},
+            'assemble': {'class_type': 'H3SceneAssemble', 'inputs': {'manifest': ['end', 0], 'scene': ['director', 2]}},
+            'result': {'class_type': 'H3SceneResult', 'inputs': {'video_path': ['assemble', 0], 'scene': ['director', 2]}},
+        }
+        self.enterContext(patch.dict(output.nodes.NODE_CLASS_MAPPINGS, package.NODE_CLASS_MAPPINGS))
+        dynamic = DynamicPrompt(graph)
+        end_id, start_id = 'end', 'start'
+        plan = {'shots': [{}, {}, {}], 'compatibility': {'context_length': 1}, 'run_name': 'three',
+                'plan_hash': 'test', 'total_delivered_frames': 3}
+        state = {'plan': plan, 'index': 1, 'segments': []}
+        latent = {'samples': [torch.ones(1, 32, 18, 8, 8), torch.ones(1, 8, 2, 122)]}
+        for index in (1, 2):
+            expanded = output.H3SceneLoopEnd().end([start_id, 0], state, torch.ones(1, 2, 2, 3),
+                latent, {'index': index}, dynamic, end_id)
+            self.assertEqual(sorted(n['class_type'] for n in expanded['expand'].values()),
+                             sorted(graph[key]['class_type'] for key in ('start', 'current', 'sampler', 'decode', 'save', 'end')))
+            for key, node in expanded['expand'].items():
+                dynamic.add_ephemeral_node(key, node, end_id, node['override_display_id'])
+            end_id = expanded['result'][0][0]
+            start_id = dynamic.get_node(end_id)['inputs']['flow'][0]
+            state = dynamic.get_node(start_id)['inputs']['initial_state']
+            self.assertEqual(state['index'], index + 1)
+        result = output.H3SceneLoopEnd().end([start_id, 0], state, torch.ones(1, 2, 2, 3),
+            latent, {'index': 3}, dynamic, end_id)
+        self.assertEqual([s['index'] for s in result[0]['segments']], [1, 2, 3])
+
+    def test_director_loop_migration_preserves_other_settings(self):
+        root = Path(__file__).resolve().parents[2]
+        source = json.loads((root / 'user/default/workflows/video_minimax_h3_scene_director_dev.director-loop-backup.json').read_bytes())
+        updated = director_loop(source)
+        self.assertEqual(director_loop(updated), updated)
+        for before, after in zip([source, *source['definitions']['subgraphs']], [updated, *updated['definitions']['subgraphs']]):
+            self.assertEqual(before['links'], after['links'])
+            for old, new in zip(before['nodes'], after['nodes']):
+                if old['type'] != 'MiniMaxH3ChainLoopEnd':
+                    self.assertEqual(old, new)
+                else:
+                    self.assertEqual(new['type'], 'H3SceneLoopEnd')
+                    self.assertEqual(old['outputs'], new['outputs'])
+                    self.assertEqual(old['pos'], new['pos'])
+                    self.assertEqual(old.get('title'), new.get('title'))
 
     def test_project_output_wiring_preserves_workflow(self):
         root = Path(__file__).resolve().parents[2]

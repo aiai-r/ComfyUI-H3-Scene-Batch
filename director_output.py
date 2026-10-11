@@ -20,6 +20,40 @@ def run_directory(scene, run_name):
     return contained(root, output.get('directory', f'renders/{run_name}'))
 
 
+class H3SceneLoopEnd:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {'required': {'flow': ('H3_CHAIN_FLOW', {'rawLink': True}), 'state': ('H3_CHAIN_STATE',),
+                             'images': ('IMAGE',), 'sampled_latent': ('LATENT',), 'segment': ('H3_CHAIN_SEGMENT',)},
+                'hidden': {'dynprompt': 'DYNPROMPT', 'unique_id': 'UNIQUE_ID'}}
+
+    RETURN_TYPES = ('H3_CHAIN_MANIFEST', 'STRING', 'IMAGE', 'LATENT')
+    RETURN_NAMES = ('manifest', 'manifest_json', 'last_context_frames', 'last_context_latent')
+    FUNCTION = 'end'
+    CATEGORY = 'H3 Scene Batch'
+
+    def end(self, flow, state, images, sampled_latent, segment, dynprompt=None, unique_id=None):
+        chain = context_loop()
+        plan, index = state['plan'], int(state['index'])
+        if segment['index'] != index:
+            raise ValueError('Directorのカットと生成結果の番号が一致しません。')
+        context_length = min(chain._plan_context_storage_length(plan), int(images.shape[0]))
+        next_state = {**state, 'index': index + 1,
+                      'previous_frames': chain._tensor_cpu_clone(images[-context_length:] if context_length else images[:0]),
+                      'previous_latent': chain._compact_latent(sampled_latent),
+                      'segments': [*state['segments'], segment]}
+        if index < len(plan['shots']):
+            return chain.MiniMaxH3ChainLoopEnd()._recurse(flow, next_state, dynprompt, unique_id)
+        segments = next_state['segments']
+        if [s['index'] for s in segments] != list(range(1, len(plan['shots']) + 1)):
+            raise ValueError('Directorの完成カットが揃っていません。')
+        manifest = {'format': 'h3_chain_manifest_v3', 'run_name': plan['run_name'], 'plan_hash': plan['plan_hash'],
+                    'prompt_prefix': plan.get('prompt_prefix', ''), 'compatibility': plan['compatibility'],
+                    'clip_count': len(segments), 'total_delivered_frames': plan['total_delivered_frames'],
+                    'duration_seconds': plan['total_delivered_frames'] / chain.FPS, 'segments': segments}
+        return manifest, json.dumps(manifest, ensure_ascii=False), next_state['previous_frames'], next_state['previous_latent']
+
+
 class H3SceneSegmentSave:
     @classmethod
     def INPUT_TYPES(cls):

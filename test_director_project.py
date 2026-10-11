@@ -108,6 +108,52 @@ class DirectorProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '変更'): self.action('adopt', prompt_id='good', node_id='1211')
         self.assertEqual(self.action('list')['scenes'], [])
 
+    def test_identical_assets_are_shared_across_names_modes_and_legacy_paths(self):
+        first = self.save('first')
+        root = project.project_path('test')
+        items = project.records(root)
+        relative = items[0]['scene']['assets'][0]['file']
+        self.assertEqual(relative, f'assets/{director.file_digest(self.input / "ref.png")}.png')
+        shutil.copy2(self.input / 'ref.png', self.input / 'renamed.PNG')
+        with patch.object(project.shutil, 'copy2', wraps=shutil.copy2) as copies:
+            self.success('second', 'I2V')
+            self.queue.history['second']['outputs']['1211']['h3_scene_result'][0]['scene']['assets'][0]['file'] = 'renamed.PNG'
+            self.action('adopt', prompt_id='second', node_id='1211')
+        self.assertEqual(copies.call_count, 1, 'Only the preview is copied for a reused asset')
+        self.assertEqual(project.records(root)[1]['scene']['assets'][0]['file'], relative)
+        legacy = f'assets/{first}/000.png'
+        (root / legacy).parent.mkdir(parents=True)
+        (root / relative).rename(root / legacy)
+        items = project.records(root)
+        for item in items: item['scene']['assets'][0]['file'] = legacy
+        project.write_json(root / 'scenes.json', items)
+        self.save('third')
+        self.assertEqual(project.records(root)[2]['scene']['assets'][0]['file'], legacy)
+        self.assertEqual(len(list((root / 'assets').rglob('*.png'))), 1)
+        Image.new('RGB', (32, 32), 'red').save(self.input / 'ref.png')
+        self.save('different')
+        self.assertNotEqual(project.records(root)[3]['scene']['assets'][0]['file'], legacy)
+        self.assertEqual(len(list((root / 'assets').rglob('*.png'))), 2)
+        self.assertTrue(director.reference_path(self.action('load', id=first)['scene']['assets'][0]['file']).exists())
+
+    def test_progress_polling_writes_only_on_state_changes(self):
+        identity = self.save('first', 'T2V')
+        self.action('start', ids=[identity], owner='one', result_node='1211')
+        attempt = self.action('next', owner='one')['batch']['attempt']
+        with patch.object(project, 'write_json', wraps=project.write_json) as writes:
+            self.action('status'); self.action('status')
+            writes.assert_not_called()
+            self.queue.running = [(1, attempt['prompt_id'])]
+            self.assertEqual(self.action('status')['batch']['status'], 'running')
+            self.assertEqual(writes.call_count, 1)
+            self.action('status'); self.action('status')
+            self.assertEqual(writes.call_count, 1)
+            self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
+            self.assertEqual(self.action('status')['batch']['status'], 'complete')
+            self.assertEqual(writes.call_count, 2)
+            self.action('status')
+            self.assertEqual(writes.call_count, 2)
+
     def test_external_project_path_media_loading_and_optional_preview(self):
         identity = self.save('first')
         external = self.root / 'cloud upload' / 'MyScenes'

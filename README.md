@@ -47,14 +47,14 @@ ComfyUIを再起動し、ブラウザを再読み込みしてこのJSONを開い
 
 一覧の番号はプロジェクト内の保存順です。「開始番号」にNを指定し「この番号から末尾まで生成」で、N番目以降を新しい一括生成として開始できます。選択生成も保存順に実行します。進捗は「生成中：シーン 12/40 · 今回 2/31 シーン完了」の形式で表示し、停止・エラー位置も同じ番号で示します。
 
-一括生成中は画面を開いておいてください。エラーで停止した場合や画面を閉じた場合は「未完了から再開」で続けられます。進捗はプロジェクトの`batch.json`に保存し、完了済みシーンは飛ばします。実行中のシーンがあれば、その完了を待ってから次へ進みます。失敗・中断したシーンは先頭カットから再生成します。停止ボタンはこのDirectorの実行だけを対象にします。
+一括生成中は画面を開いておいてください。エラーで停止した場合や画面を閉じた場合は「未完了から再開」で続けられます。進捗はプロジェクトの`batch.json`に保存し、完了済みシーンは飛ばします。進捗確認で状態が変わらなければ書き込みません。実行中のシーンがあれば、その完了を待ってから次へ進みます。失敗・中断したシーンは先頭カットから再生成します。停止ボタンはこのDirectorの実行だけを対象にします。
 
 ### 保存内容
 
 プロジェクト名を指定した場合の保存先は `output/h3_scene_director/<プロジェクト名>/` です。既存プロジェクトの絶対パスを指定した場合は、そのフォルダを使います。
 
 - `scenes.json`: 採用シーン。各シーンに全カット、実行seed、確定Prompt、生成／重複除去後のフレーム数、モード、素材の役割、生成設定、成功実行ID、実尺を保存します。
-- `assets/`: 使用した参照画像・音声・動画のコピー。
+- `assets/`: 使用した参照画像・音声・動画。同じ内容の素材はSHA-256で照合してシーン間で共有します。新規素材は`assets/<ハッシュ>.<拡張子>`へ保存し、既存プロジェクトのシーン別フォルダ内の素材も再利用します。既存ファイルの移動・削除は行いません。
 - `previews/`: 採用した完成動画のコピー。
 - `batch.json`: 今回の一括生成の対象・完了位置・実行ID・結果。
 - `renders/<実行名>/scene.mp4`: 通常生成の完成動画。
@@ -68,11 +68,12 @@ ComfyUIを再起動し、ブラウザを再読み込みしてこのJSONを開い
 素材は相対パスで保存します。ComfyUIのoutput外にあるプロジェクトの参照素材は、標準の読み込み経路で扱えるよう`output/h3_scene_director/_external/`へコピーして使用します。プレビュー・完成動画はプロジェクトから直接表示します。`scenes.json`は読み込み時に書き換えず、`batch.json`は指定した元フォルダへ保存します。指定先には書き込み権限が必要です。従来どおり`output/h3_scene_director/`配下へ置いてプロジェクト名で読む方法も使えます。
 既存Capture用の `scenes.json` は変換しません。Director用プロジェクトとは分離しています。
 Directorの生成経路は `H3 Scene Segment Save` と `H3 Scene Assemble` でMP4・float32 WAV・小さなJSONだけを保存し、safetensorsチェックポイントは作成しません。Context Loopのカット間の映像・音声の状態は実行中のメモリで引き継ぎます。音声の重複部分もWAVへ保存し、従来と同じ音声結合処理を使用します。一括生成のシーン番号指定・未完了シーンからの再開は使えますが、失敗したシーンは先頭カットから再生成します。シーン内の途中カットからのディスク再開・潜在からの再出力には対応しません。
-既存の完成版Director workflowはComfyUIを終了してから `venv/Scripts/python.exe custom_nodes/ComfyUI-H3-Scene-Batch/remove_director_checkpoints.py <workflow.json> --project-output` で更新できます。元JSONを `.project-output-backup.json` に保存し、保存・結合ノードとプロジェクト情報の接続だけを変更します。再起動後は更新済みJSONを開いてください。Context Loop本体や過去の動画・チェックポイントは変更・削除しません。
+既存の完成版Director workflowはComfyUIを終了してから `venv/Scripts/python.exe custom_nodes/ComfyUI-H3-Scene-Batch/remove_director_checkpoints.py <workflow.json> --project-output --director-loop` で更新できます。元JSONを `.director-loop-backup.json` に保存し、保存・結合・Loop Endとプロジェクト情報の接続を更新します。再起動後は更新済みJSONを開いてください。Context Loop本体や過去の動画・チェックポイントは変更・削除しません。
 
 ### 生成と設定
 
 インストール済み **ComfyUI-MiniMaxH3-Context-Loop** の公開ノードを使用します。
+Loop EndはDirector用の **H3 Scene Loop End** を使い、Context Loopの編集情報・アーカイブ・manifest保存処理を通しません。カットの状態引き継ぎと次カットの実行を担当します。
 シーン内は **Hard picture + smooth audio / Generate audio**。前カットの映像39フレーム・音声末尾8tickを使い、映像と音声の重複を一緒に除去します。シーン間には状態を持ち越しません。
 始点画像は先頭カット、終点画像は最後のカットだけに適用します。動画参照はVHSで24fpsとして読み込み、指定した場合はその音声も使います。
 

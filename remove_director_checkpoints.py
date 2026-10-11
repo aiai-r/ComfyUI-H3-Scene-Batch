@@ -85,16 +85,40 @@ def connect_project_outputs(workflow):
     return result
 
 
+def director_loop(workflow):
+    result = copy.deepcopy(workflow)
+    for graph in [result, *result.get('definitions', {}).get('subgraphs', [])]:
+        for node in graph['nodes']:
+            if node['type'] != 'MiniMaxH3ChainLoopEnd':
+                continue
+            values = node.get('widgets_values_named') or dict(zip(
+                ('between_scene_cleanup', 'execution_mode'), node.get('widgets_values', [])))
+            if values.get('between_scene_cleanup', 'off') != 'off' or values.get('execution_mode', 'recursive_legacy') != 'recursive_legacy':
+                raise ValueError('Loop Endの設定がDirectorの標準設定と異なります。個別に確認してください。')
+            unused = ('between_scene_cleanup', 'execution_mode')
+            if any(i.get('link') is not None for i in node['inputs'] if i['name'] in unused):
+                raise ValueError('Loop Endの実行設定が接続されています。個別に確認してください。')
+            node['type'] = 'H3SceneLoopEnd'
+            node['properties']['Node name for S&R'] = node['type']
+            node['inputs'] = [i for i in node['inputs'] if i['name'] not in unused]
+            node['widgets_values'] = []
+            node.pop('widgets_values_named', None)
+    return result
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Replace Director checkpoint output nodes with MP4/WAV output nodes.')
     parser.add_argument('workflow', type=Path)
     parser.add_argument('--project-output', action='store_true', help='Connect the project destination to Director output nodes.')
+    parser.add_argument('--director-loop', action='store_true', help='Remove Context Loop editorial and archive handling from Director.')
     args = parser.parse_args()
     original = args.workflow.read_bytes()
     updated = migrate(json.loads(original))
     if args.project_output:
         updated = connect_project_outputs(updated)
-    backup = args.workflow.with_suffix('.project-output-backup.json' if args.project_output else '.checkpoint-backup.json')
+    if args.director_loop:
+        updated = director_loop(updated)
+    backup = args.workflow.with_suffix('.director-loop-backup.json' if args.director_loop else '.project-output-backup.json' if args.project_output else '.checkpoint-backup.json')
     if not backup.exists():
         backup.write_bytes(original)
     if args.workflow.read_bytes() != original:

@@ -113,8 +113,8 @@ def build_workflow(source, workflow_id):
     trim["inputs"][1]["widget"] = {"name": "trim_frames"}
     create(1205, "H3SceneSegmentSave", [("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("audio", "AUDIO")],
            [("segment", "H3_CHAIN_SEGMENT"), ("status", "STRING")], [], (4850, 500))
-    create(1206, "MiniMaxH3ChainLoopEnd", [("flow", "H3_CHAIN_FLOW"), ("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("sampled_latent", "LATENT"), ("segment", "H3_CHAIN_SEGMENT")],
-           [("manifest", "H3_CHAIN_MANIFEST"), ("manifest_json", "STRING"), ("last_context_frames", "IMAGE"), ("last_context_latent", "LATENT")], ["off", "recursive_legacy"], (5300, 150))
+    create(1206, "H3SceneLoopEnd", [("flow", "H3_CHAIN_FLOW"), ("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("sampled_latent", "LATENT"), ("segment", "H3_CHAIN_SEGMENT")],
+           [("manifest", "H3_CHAIN_MANIFEST"), ("manifest_json", "STRING"), ("last_context_frames", "IMAGE"), ("last_context_latent", "LATENT")], [], (5300, 150))
     create(1207, "H3SceneAssemble", [("manifest", "H3_CHAIN_MANIFEST")], [("video_path", "STRING")],
            ["scene", 256], (5750, 150), (430, 340))
     create(1208, "PreviewAny", [("source", "*")], [], [], (900, 1050), (650, 280))
