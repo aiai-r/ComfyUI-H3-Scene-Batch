@@ -67,8 +67,9 @@ for (const selected of [0, 1]) {
 const analysis = draftGraph(config, scene, plan, "analysis", "Do not send this", "Or this", null);
 assert.deepEqual(analysis.writer.inputs.images, ["images", 0]);
 assert.equal(analysis.writer.inputs.cache_image_analysis, true);
-assert.deepEqual(Object.keys(JSON.parse(analysis.writer.inputs.custom_prompt)), ["references"]);
-assert.deepEqual(JSON.parse(analysis.writer.inputs.custom_prompt).references.map(r => r.label), ["<Picture 1>"]);
+assert.deepEqual(JSON.parse(analysis.writer.inputs.custom_prompt), { task: "Describe the visible contents of the supplied image." });
+assert.match(analysis.writer.inputs.system_prompt, /observations in English without reference numbers/);
+assert.doesNotMatch(analysis.writer.inputs.system_prompt, /Japanese|R2V|I2V|first image|last image/);
 for (const action of ["story", "prompt"]) for (const selected of [null, 1]) {
   const output = draftGraph(config, scene, plan, action, "指示", "Outline", selected, "Observations");
   const request = JSON.parse(output.writer.inputs.custom_prompt);
@@ -84,7 +85,11 @@ const key = await imageAnalysisKey(config, scene, async path => {
 assert.equal(key, await imageAnalysisKey(config, scene, async () => bytes("first")));
 assert.notEqual(key, await imageAnalysisKey(config, scene, async () => bytes("replacement at same path")));
 assert.notEqual(key, await imageAnalysisKey({ ...config, loader: { model: "changed" } }, scene, async () => bytes("first")));
-assert.notEqual(key, await imageAnalysisKey(config, { ...scene, assets: [{ ...scene.assets[0], note: "Changed role note" }] }, async () => bytes("first")));
+assert.equal(key, await imageAnalysisKey(config, { ...scene, assets: [{ ...scene.assets[0], note: "Changed role note" }] }, async () => bytes("first")));
+for (const [mode, role] of [["R2V", "reference"], ["I2V", "first"], ["L2V", "last"], ["FL2V", "last"]]) {
+  assert.equal(key, await imageAnalysisKey(config, { mode, assets: [{ kind: "image", role, file: "another-folder/renamed.png", note: "New note" }] }, async () => bytes("first")));
+}
+assert.notEqual(key, await imageAnalysisKey({ ...config, prompt: { ...config.prompt, parameters: { temperature: 0.2 } } }, scene, async () => bytes("first")));
 await imageAnalysisKey(config, { mode: "I2V", assets: [{ kind: "image", role: "first", file: "folder\\image.png [output]" }] }, async path => {
   const query = new URL(path, "http://localhost").searchParams;
   assert.equal(query.get("filename"), "image.png"); assert.equal(query.get("subfolder"), "folder"); assert.equal(query.get("type"), "output");

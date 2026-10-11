@@ -236,6 +236,7 @@ function attachDirector(node) {
           Object.assign(replace, { ...asset, note: replace.note ?? "" });
         } else { scene.assets.push(asset); selectedAsset = scene.assets.length - 1; }
         arrangeAssets(); save();
+        if (kind === "image" && node.properties.h3_llm) await llm.matchImage(asset);
       }
     } finally { uploading = false; root.dataset.uploading = "false"; render(); }
   }

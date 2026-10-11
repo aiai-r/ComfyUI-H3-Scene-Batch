@@ -5,9 +5,25 @@ export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
 
   imageRecord(asset) {
-    const id = JSON.stringify([asset.file, asset.role ?? "reference", asset.note ?? ""]);
+    const id = this.node.properties.h3_image_analysis_keys?.[asset.file] ?? JSON.stringify([asset.file, asset.role ?? "reference", asset.note ?? ""]);
     const records = this.node.properties.h3_image_analyses ??= {};
     return records[id] ??= { text: "", key: "" };
+  }
+
+  async imageKey(asset) {
+    return imageAnalysisKey(this.node.properties.h3_llm, { mode: "R2V", assets: [{ kind: "image", file: asset.file }] }, async path => {
+      const response = await api.fetchApi(path, { cache: "no-store" });
+      if (!response.ok) throw new Error("参照画像を読み込めません。素材を確認してください。");
+      return response.arrayBuffer();
+    });
+  }
+
+  async matchImage(asset) {
+    const key = await this.imageKey(asset);
+    (this.node.properties.h3_image_analysis_keys ??= {})[asset.file] = key;
+    const record = this.imageRecord(asset); record.key = key;
+    this.node.graph?.change();
+    return record;
   }
 
   async execute(graph, label) {
@@ -54,17 +70,12 @@ export class DirectorLLM {
     if (!config) throw new Error("LLM設定がありません。開発workflowを開いてください。");
     for (const asset of assets) {
       if (this.cancelled) throw new Error("LLM処理を中止しました。");
-      const single = { ...scene, assets: [{ ...asset, enabled: true }] };
-      const key = () => imageAnalysisKey(config, single, async path => {
-        const response = await api.fetchApi(path, { cache: "no-store" });
-        if (!response.ok) throw new Error("参照画像を読み込めません。素材を確認してください。");
-        return response.arrayBuffer();
-      });
-      const current = await key(), record = this.imageRecord(asset);
-      if (!force && record.text.trim() && record.key === current) continue;
+      const single = { mode: "R2V", assets: [{ kind: "image", file: asset.file }] };
+      const record = await this.matchImage(asset), current = record.key;
+      if (!force && record.text.trim()) continue;
       const graph = draftGraph(config, single, { shots: [] }, "analysis", "", "");
       const text = await this.execute(graph, `画像解析中：${asset.file}`);
-      if (current !== await key()) throw new Error("処理中に画像が変わりました。解析を再実行してください。");
+      if (current !== await this.imageKey(asset)) throw new Error("処理中に画像またはLLM設定が変わりました。解析を再実行してください。");
       if (this.cancelled) throw new Error("LLM処理を中止しました。");
       record.text = text; record.key = current; this.node.graph?.change();
     }

@@ -10,7 +10,7 @@ const api = { async fetchApi(path, options) {
   if (path === "/prompt") {
     const graph = JSON.parse(options.body).prompt; calls.push(graph); const id = String(calls.length);
     history.set(id, failed ? { status: { status_str: "error", messages: [["execution_error", { exception_message: "LLM failed" }]] } }
-      : { status: { completed: true }, outputs: { result: { text: ["観察結果 " + id] } } });
+      : { status: { completed: true }, outputs: { result: { text: ["Observations " + id] } } });
     if (pending) return new Promise(resolve => { pending.resolve = () => resolve({ ok: true, json: async () => ({ prompt_id: id }) }); });
     return { ok: true, json: async () => ({ prompt_id: id }) };
   }
@@ -37,10 +37,47 @@ assert.equal(JSON.parse(calls.at(-1).images.inputs.scene_json).assets[0].file, "
 await llm.analyze(scene, [scene.assets[0]], true);
 assert.equal(calls.length, 4);
 const swapped = { ...scene, assets: [...scene.assets].reverse() };
-assert.match(await llm.analyze(swapped), /^<Picture 1>\n観察結果 3/);
+assert.match(await llm.analyze(swapped), /^<Picture 1>\nObservations 3/);
 assert.equal(calls.length, 4, "Slot order changes labels without reanalyzing images");
 assert.equal(await llm.analyze({ ...scene, mode: "T2V" }), "");
 assert.equal(calls.length, 4);
+
+bytes.set("copy.png", "one");
+const copy = { kind: "image", file: "another-folder/copy.png", role: "first", note: "New note" };
+await llm.matchImage(copy);
+assert.equal(llm.imageRecord(copy), llm.imageRecord(scene.assets[0]), "Same bytes under a new name share the analysis immediately after import");
+for (const [mode, role, label] of [["R2V", "reference", "<Picture 1>"], ["I2V", "first", "first frame"], ["L2V", "last", "last frame"]]) {
+  assert.equal(await llm.analyze({ mode, assets: [{ ...copy, role }] }), `${label}\nObservations 4`);
+}
+const paired = { mode: "FL2V", assets: [{ ...copy, role: "first" }, { ...scene.assets[0], role: "last" }] };
+assert.equal(await llm.analyze(paired), "first frame\nObservations 4\n\nlast frame\nObservations 4");
+assert.equal(calls.length, 4, "Modes and duplicate first/last images reuse one analysis");
+node.properties = JSON.parse(JSON.stringify(node.properties));
+const restored = new LLM(node, () => {});
+restored.imageRecord(copy).text = "Edited after reload";
+assert.equal(restored.imageRecord(scene.assets[0]).text, "Edited after reload");
+assert.match(await restored.analyze(paired), /first frame\nEdited after reload/);
+assert.equal(calls.length, 4, "Workflow reload preserves content aliases and edits");
+node.properties.h3_llm.loader.model = "changed";
+await llm.analyze(paired);
+assert.equal(calls.length, 5, "A changed model runs once for duplicate images");
+node.properties.h3_llm.prompt.parameters.temperature = 0.2;
+await llm.analyze(paired);
+assert.equal(calls.length, 6, "Changed analysis settings invalidate reuse");
+node.properties.h3_llm.loader.model = "existing";
+delete node.properties.h3_llm.prompt.parameters.temperature;
+assert.match(await llm.analyze(paired), /Edited after reload/);
+assert.equal(calls.length, 6);
+
+const legacyId = JSON.stringify(["one.png", "reference", ""]);
+const legacyNode = { properties: { h3_llm: structuredClone(node.properties.h3_llm), h3_image_analyses: { [legacyId]: { text: "以前の日本語解析", key: "old-key" } } } };
+const legacy = new LLM(legacyNode, () => {});
+await legacy.analyze({ mode: "R2V", assets: [scene.assets[0]] });
+assert.equal(calls.length, 7, "Old Japanese analysis is replaced with a fresh English analysis once");
+assert.equal(legacyNode.properties.h3_image_analyses[legacyId].text, "以前の日本語解析");
+assert.match(legacy.imageRecord(scene.assets[0]).text, /^Observations/);
+await legacy.analyze({ mode: "I2V", assets: [{ ...scene.assets[0], role: "first" }] });
+assert.equal(calls.length, 7);
 
 failed = true;
 const record = structuredClone(llm.imageRecord(scene.assets[0]));
@@ -54,4 +91,14 @@ await llm.stop(); pending.resolve(); pending = null;
 await assert.rejects(running, /中止/);
 assert.deepEqual(llm.imageRecord(scene.assets[0]), record);
 assert.equal(llm.promptId, null);
-console.log("Director LLM: per-image analysis, manual edits, reorder, same-path replacement, T2V, failure and pending-registration cancellation passed.");
+llm.cancelled = false;
+for (const change of [() => bytes.set("one.png", "changed during inference"), () => { node.properties.h3_llm.loader.model = "changed during inference"; }]) {
+  pending = {};
+  const running = llm.analyze(scene, [scene.assets[0]], true);
+  while (!pending.resolve) await new Promise(resolve => setImmediate(resolve));
+  const previous = { ...llm.imageRecord(scene.assets[0]) };
+  change(); pending.resolve(); pending = null;
+  await assert.rejects(running, /処理中に画像またはLLM設定が変わりました/);
+  assert.deepEqual(llm.imageRecord(scene.assets[0]), previous, "Changed inputs must not receive mismatched analysis");
+}
+console.log("Director LLM: content reuse across modes/names, persistence, edits, settings, legacy analysis, replacement, T2V, failure, cancellation and input races passed.");

@@ -21,19 +21,20 @@ Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectVa
 } });
 let extension, draftOpened = false, queuedRecord;
 const uploaded = [];
+const uploadedBytes = new Map();
 const llmCalls = [], history = new Map();
 const projectCalls = [];
 let promptOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
   async fetchApi(path, request) {
-    if (path.startsWith('/view?')) return { ok: true, arrayBuffer: async () => new TextEncoder().encode(path).buffer };
+    if (path.startsWith('/view?')) return { ok: true, arrayBuffer: async () => uploadedBytes.get(new URL(path, 'http://localhost').searchParams.get('filename')) ?? new TextEncoder().encode(path).buffer };
     if (path.startsWith('/history/')) { const id = path.split('/').pop(); return { ok: true, json: async () => ({ [id]: history.get(id) }) }; }
     if (path === '/prompt') {
       const graph = JSON.parse(request.body).prompt, data = JSON.parse(graph.writer.inputs.custom_prompt);
       const stage = graph.images ? 'analysis' : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
       llmCalls.push({ stage, data });
-      const text = stage === 'analysis' ? '人物が庭にいる' : stage === 'story' ? '庭を歩いて振り返る'
+      const text = stage === 'analysis' ? 'A person stands in a garden.' : stage === 'story' ? '庭を歩いて振り返る'
         : promptOutput ?? JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id, start_state: 'Start ' + c.id, end_state: 'End ' + c.id })) });
       if (stage === 'prompt') onPrompt();
       const id = String(llmCalls.length); history.set(id, { status: { completed: true }, outputs: { result: { text: [text] } } });
@@ -41,6 +42,7 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
     }
     assert.equal(path, '/upload/image');
     const file = request.body.get('image'); uploaded.push(file.name);
+    uploadedBytes.set(file.name, await file.arrayBuffer());
     return { ok: true, json: async () => ({ name: file.name, subfolder: 'h3_scene_director' }) };
   },
 };
@@ -187,6 +189,15 @@ assert.ok(analyzed > 0 && llmCalls.every(c => c.stage === 'analysis'));
 await byText('画像をまとめて解析').onclick(); assertHealthy();
 assert.equal(llmCalls.length, analyzed, 'Reuse completed image analyses');
 assert.ok(root.querySelector('.analysis-badge').textContent.includes('解析済み'));
+await switchMode('I2V');
+assert.equal(root.querySelector('.analysis-badge').textContent, '解析済み');
+await drop('image', 0, 'same-content-new-name.png', 'image/png'); assertHealthy();
+assert.equal(root.querySelector('.analysis-badge').textContent, '解析済み', 'Imported copy reuses its analysis before an LLM action');
+await byText('画像をまとめて解析').onclick(); assertHealthy();
+assert.equal(llmCalls.length, analyzed, 'Changing mode and importing identical bytes does not rerun analysis');
+node.properties = JSON.parse(JSON.stringify(node.properties)); node.onConfigure();
+assert.equal(root.querySelector('.analysis-badge').textContent, '解析済み');
+await switchMode('R2V');
 await root.querySelector('.media-clip[data-kind="image"] .clip-details').onclick({ stopPropagation() {} });
 assertHealthy();
 await byText('この画像を解析').onclick(); assertHealthy();
