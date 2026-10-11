@@ -22,7 +22,7 @@ const reactive = value => new Proxy(value, { get(target, key) {
 const app = { graphToPrompt: async () => reactive(template), rootGraph: { _nodes: [{ widgets: [{
   beforeQueued: () => phases.push("before"), afterQueued: () => phases.push("after"),
 }] }] } };
-const { sceneRequest, resultNode, DirectorQueue } = new Function("app", "api", "applyPromotedWidgetControl", source + "\nreturn {sceneRequest,resultNode,DirectorQueue};")(app, api, () => {});
+const { sceneRequest, resultNode, DirectorQueue, batchProgress } = new Function("app", "api", "applyPromotedWidgetControl", "setTimeout", source + "\nreturn {sceneRequest,resultNode,DirectorQueue,batchProgress};")(app, api, () => {}, callback => callback());
 const record = { plan: { shots: [{ prompt: "Garden", seed: "18446744073709551615", duration_seconds: 15 }, { prompt: "Pond", seed: "0", duration_seconds: 15 }] }, scene: { mode: "T2V", assets: [] } };
 const before = structuredClone(template);
 assert.throws(() => structuredClone(reactive(template)), { name: "DataCloneError" });
@@ -56,3 +56,46 @@ await assert.rejects(queue.generate(record), /Rejected prompt/);
 assert.deepEqual(phases, ["before"], "A rejected prompt must not advance after-queue controls");
 assert.equal(queue.busy, false);
 console.log("Director queue: saved inputs, current settings, workflow metadata and pending-registration cancellation passed.");
+
+const messages = [], batchRequests = [], submissions = [];
+let state, loadFails = false;
+api.fetchApi = async (path, options) => {
+  const body = JSON.parse(options.body);
+  if (path === '/prompt') {
+    submissions.push(body);
+    state.completed.push({ id: state.ids[state.completed.length] });
+    state.attempt = null; state.status = state.completed.length === state.ids.length ? 'complete' : 'ready';
+    return { ok: true, json: async () => ({ prompt_id: body.prompt_id }) };
+  }
+  assert.equal(path, '/h3_scene_director/project'); batchRequests.push(body);
+  if (body.action === 'start') {
+    assert.equal(body.start_index, 12);
+    state = { ids: ['scene12', 'scene13'], positions: [12, 13], total: 40, completed: [], status: 'ready' };
+  } else if (body.action === 'next') {
+    state.attempt = { prompt_id: `attempt${submissions.length}`, run_name: `run${submissions.length}` }; state.status = 'submitting';
+  } else if (body.action === 'load') {
+    return { ok: !loadFails, json: async () => loadFails ? { error: 'Missing asset' } : record };
+  } else if (body.action === 'fail') { state.status = 'error'; state.error = body.error; state.attempt = null; }
+  else if (body.action === 'resume') { state.status = 'ready'; state.error = ''; }
+  return { ok: true, json: async () => ({ batch: structuredClone(state) }) };
+};
+const batchQueue = new DirectorQueue({ id: 1200, properties: {} }, message => messages.push(message), () => {});
+await batchQueue.batch('/workspace/MyScenes', [], false, 12);
+assert.equal(submissions.length, 2);
+assert.ok(batchRequests.every(body => body.project === '/workspace/MyScenes'));
+assert.ok(messages.some(text => text.includes('シーン 12/40')));
+assert.ok(messages.some(text => text.includes('シーン 13/40')));
+assert.match(messages.at(-1), /完了：シーン 13\/40 · 今回 2\/2/);
+assert.equal(submissions[0].prompt[1200].inputs.use_current_settings, true);
+assert.deepEqual(JSON.parse(submissions[0].prompt[1200].inputs.plan_json), record.plan);
+loadFails = true;
+await assert.rejects(batchQueue.batch('/workspace/MyScenes', [], false, 12), /Missing asset/);
+assert.equal(state.status, 'error'); assert.equal(state.attempt, null);
+assert.equal(submissions.length, 2);
+assert.match(messages.at(-1), /エラー位置：シーン 12\/40/);
+loadFails = false;
+await batchQueue.batch('/workspace/MyScenes', [], true);
+assert.equal(submissions.length, 4);
+assert.equal(state.status, 'complete');
+assert.match(batchProgress({ ids: ['old'], completed: [], status: 'stopped' }), /停止位置：シーン 1\/1/);
+console.log('Director batch: start index, current settings, project position, load failure persistence and resume passed.');

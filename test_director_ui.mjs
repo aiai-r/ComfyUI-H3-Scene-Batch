@@ -24,6 +24,8 @@ const uploaded = [];
 const uploadedBytes = new Map();
 const llmCalls = [], history = new Map();
 const projectCalls = [];
+const batchCalls = [];
+let libraryData = { scenes: [], batch: null, directory: "test" };
 let promptOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
@@ -46,7 +48,11 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
     return { ok: true, json: async () => ({ name: file.name, subfolder: 'h3_scene_director' }) };
   },
 };
-class Queue { constructor() {} async generate(record) { queuedRecord = structuredClone(record); } }
+class Queue {
+  constructor() {}
+  async generate(record) { queuedRecord = structuredClone(record); }
+  async batch(...args) { batchCalls.push(args); }
+}
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "ref.png", role: "reference" }, { kind: "image", file: "other.png", role: "reference" }] };
 const plan = { prompt_prefix: "Shared", shots: [{ id: "a", prompt: "First", seed: "18446744073709551615", duration_seconds: 15 }, { id: "b", prompt: "Second", duration_seconds: 15 }] };
 class Node {
@@ -60,9 +66,14 @@ class Node {
 const source = (await readFile(new URL("./web/director.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replace("import.meta.url", JSON.stringify(new URL("./web/director.js", import.meta.url).href));
 const llmSource = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", llmSource + '\nreturn DirectorLLM;')(api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey);
-new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", source)(
+const queueSource = (await readFile(new URL("./web/director_queue.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
+const batchProgress = new Function(queueSource + '\nreturn batchProgress;')();
+new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", "batchProgress", source)(
   app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, LLM, () => { draftOpened = true; }, Queue,
-  async (project, action) => { projectCalls.push({ project, action }); return { scenes: [], batch: null, directory: "test" }; }, () => true);
+  async (project, action) => {
+    projectCalls.push({ project, action });
+    return action === 'load' ? { title: 'Cloud scene', plan, scene: { mode: 'T2V', assets: [] }, video: null } : libraryData;
+  }, () => true, batchProgress);
 await extension.beforeRegisterNodeDef(Node, { name: "H3SceneDirector" });
 const node = new Node(); node.onNodeCreated();
 const root = node.element;
@@ -291,3 +302,27 @@ assert.equal(llmCalls.at(-1).data.selected_cut, null);
 assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt), ['Generated cut2', 'Generated cut3']);
 console.log("Director DOM: direct prompt updates, sequential cut continuity, RUN serialization, invalid-output preservation, concurrent edits, story-only and bulk generation passed.");
 console.log('Director UI: mode buttons, 9/3/3 lanes, shared boundary slots, locked L2V start, slot drops, pointer swapping/moving, reference order, replacement, removal and reload passed.');
+libraryData = { directory: '/workspace/MyScenes', scenes: Array.from({ length: 40 }, (_, i) => ({ id: `s${i + 1}`, title: `Scene ${i + 1}`, mode: 'T2V', cuts: 2, video: null })),
+  batch: { ids: ['s12', 's13'], positions: [12, 13], total: 40, completed: [{ id: 's12', video: { filename: 'done.mp4' } }], status: 'error', error: 'Interrupted' } };
+field('プロジェクト').value = '/workspace/MyScenes'; field('プロジェクト').onchange();
+await byText('読込').onclick(); assertHealthy();
+assert.equal(projectCalls.at(-1).project, '/workspace/MyScenes');
+assert.equal(node.properties.h3_project, '/workspace/MyScenes');
+assert.equal(root.querySelectorAll('.library-item').length, 40);
+assert.ok(root.textContent.includes('40. Scene 40'));
+assert.ok(root.textContent.includes('エラー位置：シーン 13/40'));
+field('開始番号').value = '12';
+await byText('この番号から末尾まで生成').onclick(); assertHealthy();
+assert.deepEqual(batchCalls.at(-1), ['/workspace/MyScenes', [], false, 12]);
+await byText('未完了から再開').onclick(); assertHealthy();
+assert.deepEqual(batchCalls.at(-1), ['/workspace/MyScenes', [], true]);
+field('開始番号').value = '41';
+const count = batchCalls.length;
+await byText('この番号から末尾まで生成').onclick();
+assert.match(root.querySelector('[role="alert"]').textContent, /開始番号/);
+assert.equal(batchCalls.length, count);
+await root.querySelector('.library-item button').onclick(); assertHealthy();
+assert.equal(field('カット 1 のPrompt').value, plan.shots[0].prompt);
+assert.equal(node.widgets.find(w => w.name === 'use_current_settings').value, true);
+assert.equal(root.querySelector('.result-video'), null, 'A project without previews still loads for editing/generation');
+console.log('Director project UI: absolute path, numbered scenes, start position, missing previews and persisted failure position passed.');

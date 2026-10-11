@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 import { readPlan, updateCut } from "./director_plan.js";
 import { sceneAssets, referenceDescriptions, applyDraft } from "./director_llm.js";
 import { DirectorLLM, openLLMSettings } from "./director_dialog.js";
-import { DirectorQueue, projectRequest } from "./director_queue.js";
+import { DirectorQueue, projectRequest, batchProgress } from "./director_queue.js";
 
 const stylesheet = document.createElement("link");
 stylesheet.rel = "stylesheet"; stylesheet.href = new URL("./director.css", import.meta.url).href; document.head.append(stylesheet);
@@ -46,7 +46,13 @@ function attachDirector(node) {
   };
   const top = element(root, "div", "row");
   const project = input(top, "プロジェクト", node.properties.h3_project ?? "MyScenes");
-  project.onchange = () => { node.properties.h3_project = project.value; changed(); };
+  project.placeholder = "プロジェクト名 または サーバー上の絶対パス";
+  project.title = "scenes.jsonがあるフォルダを指定します。クラウドではクラウド側のパスを入力してください。";
+  project.onchange = () => { node.properties.h3_project = project.value; selected.clear(); changed(); };
+  button(top, "読込", async () => {
+    node.properties.h3_project = project.value; selected.clear(); changed();
+    switchTab(true); await refreshLibrary();
+  });
   const openProject = button(top, "開く", async () => {
     const data = await projectRequest(project.value, "open");
     status.textContent = `保存先を開きました：${data.directory}`;
@@ -464,26 +470,32 @@ function attachDirector(node) {
     const actions = element(library, "div", "row");
     button(actions, "更新", refreshLibrary); button(actions, "すべて選択", () => { selected = new Set(data.scenes.map(s => s.id)); return refreshLibrary(); });
     const start = button(actions, "選択シーンを一括生成", async () => { await busy(() => queue.batch(project.value, [...selected])); await refreshLibrary(); }); start.className = "primary";
+    const from = input(actions, "開始番号", 1); from.type = "number"; from.min = "1"; from.max = String(data.scenes.length); from.step = "1";
+    const fromStart = button(actions, "この番号から末尾まで生成", async () => {
+      const index = Number(from.value);
+      if (!Number.isInteger(index) || index < 1 || index > data.scenes.length) throw new Error(`開始番号は1〜${data.scenes.length}で指定してください。`);
+      await busy(() => queue.batch(project.value, [], false, index)); await refreshLibrary();
+    }); fromStart.disabled = !data.scenes.length;
     const resume = button(actions, "未完了から再開", async () => { await busy(() => queue.batch(project.value, [], true)); await refreshLibrary(); }); resume.disabled = !batch || batch.status === "complete";
     if (batch) {
-      const names = { ready: "待機", running: "生成中", submitting: "開始処理中", complete: "完了", stopped: "停止", stopping: "停止要求中", error: "エラー" };
-      element(library, "p", "", `${names[batch.status]} · ${batch.completed.length} / ${batch.ids.length} シーン完了 ${batch.error || ""}`);
+      element(library, "p", "", batchProgress(batch));
       for (const result of batch.completed) {
         const link = element(library, "a", "", `生成結果 ${batch.completed.indexOf(result) + 1} `); link.href = viewUrl(result.video); link.target = "_blank"; link.style.color = "#b2c2ff";
       }
     }
     if (!data.scenes.length) element(library, "p", "empty", "保存済みシーンはありません。作成 → 生成 → 採用保存で追加できます。");
-    for (const item of data.scenes) {
+    for (const [index, item] of data.scenes.entries()) {
       const row = element(library, "div", "library-item row"); const check = element(row, "input"); check.type = "checkbox"; check.checked = selected.has(item.id); check.setAttribute("aria-label", `${item.title}を選択`);
       check.onchange = () => check.checked ? selected.add(item.id) : selected.delete(item.id);
-      const thumbnail = element(row, "video"); thumbnail.src = viewUrl(item.video); thumbnail.preload = "metadata"; thumbnail.muted = true;
-      const label = element(row, "div", "grow"); element(label, "strong", "", item.title); element(label, "div", "muted", `${item.mode} · ${item.cuts}カット · ${item.duration_seconds?.toFixed(2) ?? "?"}秒`);
+      if (item.video) { const thumbnail = element(row, "video"); thumbnail.src = viewUrl(item.video); thumbnail.preload = "metadata"; thumbnail.muted = true; }
+      const label = element(row, "div", "grow"); element(label, "strong", "", `${index + 1}. ${item.title}`); element(label, "div", "muted", `${item.mode} · ${item.cuts}カット · ${item.duration_seconds?.toFixed(2) ?? "?"}秒`);
       button(row, "読み込む", async () => {
         if (!confirm("編集中のシーンを保存済みシーンで置き換えますか？")) return;
         const saved = await projectRequest(project.value, "load", { id: item.id });
         plan = readPlan(JSON.stringify(saved.plan)); scene = saved.scene; cut = 0; selectedAsset = -1; arrangeAssets(); node.properties.h3_title = saved.title;
         widgets.use_current_settings.value = true;
-        save(); render(); switchTab(false); showResult({ video: saved.video, duration_seconds: saved.duration_seconds }, false);
+        save(); render(); switchTab(false); resultArea.replaceChildren();
+        if (saved.video) showResult({ video: saved.video, duration_seconds: saved.duration_seconds }, false);
         status.textContent = "保存シーンを読み込みました。生成設定は現在のworkflowを使用します。";
       });
     }

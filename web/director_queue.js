@@ -9,6 +9,14 @@ export async function projectRequest(project, action, values = {}) {
   return result;
 }
 
+export function batchProgress(batch) {
+  const done = batch.completed.length, count = batch.ids.length;
+  const position = batch.positions?.[Math.min(done, count - 1)] ?? Math.min(done + 1, count);
+  const total = batch.total ?? count;
+  const label = { ready: "開始位置", running: "生成中", submitting: "開始中", complete: "完了", stopped: "停止位置", stopping: "停止要求中", error: "エラー位置" }[batch.status];
+  return `${label}：シーン ${position}/${total} · 今回 ${done}/${count} シーン完了${batch.error ? ` · ${batch.error}` : ""}`;
+}
+
 export function sceneRequest(template, directorId, record, attempt, currentSettings) {
   const value = JSON.parse(JSON.stringify(template));
   const inputs = value.output[String(directorId)]?.inputs;
@@ -95,25 +103,32 @@ export class DirectorQueue {
     }
   }
 
-  async batch(project, ids, resume = false) {
+  async batch(project, ids, resume = false, startIndex = null) {
     if (this.busy) throw new Error("このDirectorは実行中です。");
     this.busy = true; this.stopped = false; this.project = project;
     try {
       const template = await app.graphToPrompt();
       const output = resultNode(template, this.node.id);
-      let { batch } = await projectRequest(project, resume ? "resume" : "start", { ids, owner: this.owner, result_node: output });
+      let { batch } = await projectRequest(project, resume ? "resume" : "start", { ids, owner: this.owner, result_node: output,
+        ...(startIndex !== null ? { start_index: startIndex } : {}) });
       while (!this.stopped && !["complete", "error", "stopped"].includes(batch.status)) {
-        this.notify(`一括生成：${batch.completed.length} / ${batch.ids.length} シーン完了${batch.attempt ? "・生成中" : ""}`);
+        this.notify(batchProgress(batch));
         if (batch.status === "ready") {
           ({ batch } = await projectRequest(project, "next", { owner: this.owner }));
           if (this.stopped) break;
-          const record = await projectRequest(project, "load", { id: batch.ids[batch.completed.length] });
-          if (this.stopped) break;
-          const value = sceneRequest(template, this.node.id, record, batch.attempt, true);
-          try { await submitScene(value, batch.attempt.prompt_id); }
+          this.notify(batchProgress(batch));
+          let submitting = false;
+          try {
+            const record = await projectRequest(project, "load", { id: batch.ids[batch.completed.length] });
+            if (this.stopped) break;
+            const value = sceneRequest(template, this.node.id, record, batch.attempt, true);
+            submitting = true;
+            await submitScene(value, batch.attempt.prompt_id);
+          }
           catch (e) {
             // A lost response may still have queued the job. Keep its UUID for reconciliation.
-            if (e.rejected) await projectRequest(project, "fail", { prompt_id: batch.attempt.prompt_id, error: e.message });
+            if (!submitting || e.rejected) await projectRequest(project, "fail", { prompt_id: batch.attempt.prompt_id, error: e.message });
+            this.notify(batchProgress({ ...batch, status: "error", error: e.message }));
             throw e;
           }
           if (this.stopped) {
@@ -125,7 +140,8 @@ export class DirectorQueue {
         await wait();
         ({ batch } = await projectRequest(project, "status"));
       }
-      this.notify(batch.status === "complete" ? `一括生成完了：${batch.completed.length} シーン` : batch.error || "一括生成を停止しました。");
+      if (this.stopped) ({ batch } = await projectRequest(project, "status"));
+      this.notify(batchProgress(batch));
       return batch;
     } finally { this.busy = false; this.project = null; }
   }

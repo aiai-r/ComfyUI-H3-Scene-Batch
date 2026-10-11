@@ -1,6 +1,7 @@
 import copy
 import importlib
 import json
+import shutil
 import tempfile
 import time
 import unittest
@@ -106,6 +107,70 @@ class DirectorProjectTests(unittest.TestCase):
         Image.new('RGB', (32, 32), 'red').save(self.input / 'ref.png')
         with self.assertRaisesRegex(ValueError, '変更'): self.action('adopt', prompt_id='good', node_id='1211')
         self.assertEqual(self.action('list')['scenes'], [])
+
+    def test_external_project_path_media_loading_and_optional_preview(self):
+        identity = self.save('first')
+        external = self.root / 'cloud upload' / 'MyScenes'
+        external.parent.mkdir()
+        shutil.move(str(project.project_path('test')), external)
+        manifest = (external / 'scenes.json').read_bytes()
+        (self.input / 'ref.png').unlink()
+        action = lambda name, **values: project.project_action({'project': str(external), 'action': name, **values}, self.queue)
+        listing = action('list')
+        self.assertEqual(listing['directory'], str(external))
+        self.assertEqual(len(listing['scenes']), 1)
+        self.assertEqual(listing['scenes'][0]['video']['type'], 'output')
+        loaded = action('load', id=identity)
+        asset = director.reference_path(loaded['scene']['assets'][0]['file'])
+        source = external / json.loads(manifest)[0]['scene']['assets'][0]['file']
+        self.assertEqual(asset.read_bytes(), source.read_bytes())
+        self.assertTrue(asset.is_relative_to(self.output))
+        Image.new('RGB', (48, 32), 'red').save(source)
+        self.assertEqual(director.reference_path(action('load', id=identity)['scene']['assets'][0]['file']).read_bytes(), source.read_bytes())
+        shutil.rmtree(external / 'previews')
+        self.assertIsNone(action('list')['scenes'][0]['video'])
+        self.assertIsNone(action('load', id=identity)['video'])
+        action('start', start_index=1, owner='cloud', result_node='1211')
+        self.assertTrue((external / 'batch.json').is_file())
+        self.assertEqual((external / 'scenes.json').read_bytes(), manifest)
+        items = json.loads(manifest)
+        items[0]['scene']['assets'][0]['file'] = '../outside.png'
+        (external / 'scenes.json').write_text(json.dumps(items), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, '保存先の外'):
+            action('load', id=identity)
+        with self.assertRaisesRegex(ValueError, '絶対パス'):
+            project.project_path(str(self.root / 'missing'))
+
+    def test_start_at_project_position_and_resume_after_restart(self):
+        self.save('first', 'T2V')
+        root = project.project_path('test')
+        first = project.records(root)[0]
+        items = [{**copy.deepcopy(first), 'id': f'scene{i}', 'title': f'Scene {i}'} for i in range(1, 41)]
+        project.write_json(root / 'scenes.json', items)
+        for start in (0, 41, 1.5, True, '2'):
+            with self.assertRaisesRegex(ValueError, '開始番号'):
+                self.action('start', start_index=start, owner='one', result_node='1211')
+        state = self.action('start', start_index=12, owner='one', result_node='1211')['batch']
+        self.assertEqual(state['ids'], [f'scene{i}' for i in range(12, 41)])
+        self.assertEqual(state['positions'], list(range(12, 41)))
+        self.assertEqual(state['total'], 40)
+        attempt = self.action('next', owner='one')['batch']['attempt']
+        self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
+        state = self.action('status')['batch']
+        self.assertEqual(state['completed'][0]['id'], 'scene12')
+        failed = self.action('next', owner='one')['batch']['attempt']
+        self.queue.history[failed['prompt_id']] = {'status': {'status_str': 'error'}}
+        self.assertEqual(self.action('status')['batch']['status'], 'error')
+        self.queue = Queue()
+        resumed = self.action('resume', owner='two')['batch']
+        self.assertEqual(resumed['positions'][len(resumed['completed'])], 13)
+        self.assertEqual(len(resumed['completed']), 1)
+        retry = self.action('next', owner='two')['batch']['attempt']
+        self.assertNotEqual(retry['run_name'], failed['run_name'])
+        self.action('stop')
+        selected = self.action('start', ids=['scene40', 'scene3'], owner='two', result_node='1211')['batch']
+        self.assertEqual(selected['ids'], ['scene3', 'scene40'])
+        self.assertEqual(selected['positions'], [3, 40])
 
     @unittest.skipUnless(project.os.name == 'nt', 'Windows Explorer')
     def test_open_project_folder(self):

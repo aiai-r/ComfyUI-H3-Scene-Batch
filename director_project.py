@@ -22,8 +22,14 @@ PROJECT_LOCK = threading.Lock()
 
 
 def project_path(name):
+    if isinstance(name, str) and Path(name).is_absolute():
+        path = Path(name).resolve()
+        if not path.is_dir() or not contained(path, 'scenes.json').is_file():
+            raise ValueError("scenes.jsonがあるプロジェクトフォルダの絶対パスを指定してください。")
+        records(path)
+        return path
     if not isinstance(name, str) or not name.strip() or name != name.strip() or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name.endswith('.') or name in ('.', '..'):
-        raise ValueError("プロジェクト名にはフォルダ名だけを指定してください。")
+        raise ValueError("プロジェクト名、またはscenes.jsonがあるフォルダの絶対パスを指定してください。")
     output = Path(folder_paths.get_output_directory()).resolve()
     root = (output / "h3_scene_director").resolve()
     path = (root / name).resolve()
@@ -42,16 +48,42 @@ def contained(root, relative):
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.tmp')
+    if temporary.is_symlink():
+        raise ValueError("保存用の一時ファイルがシンボリックリンクです。")
     temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     temporary.replace(path)
 
 
 def records(root):
-    path = root / 'scenes.json'
+    path = contained(root, 'scenes.json')
     result = json.loads(path.read_text(encoding='utf-8')) if path.exists() else []
-    if not isinstance(result, list) or any(item.get('director_version') != 1 for item in result):
+    if not isinstance(result, list) or any(not isinstance(item, dict) or item.get('director_version') != 1 for item in result):
         raise ValueError("Director用ではないscenes.jsonです。別のプロジェクト名を指定してください。")
     return result
+
+
+def project_media(root, relative):
+    source = contained(root, relative)
+    if not source.is_file():
+        raise ValueError(f"プロジェクトの素材が見つかりません：{relative}")
+    output = Path(folder_paths.get_output_directory()).resolve()
+    if source.is_relative_to(output):
+        return source
+    identity = hashlib.sha256(str(root).encode()).hexdigest()[:20]
+    cache = contained(output, f'h3_scene_director/_external/{identity}')
+    destination = contained(cache, source.relative_to(root))
+    stat = source.stat()
+    if not destination.is_file() or (destination.stat().st_size, destination.stat().st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    return destination
+
+
+def project_preview(root, item):
+    relative = item.get('preview')
+    if not relative or not contained(root, relative).is_file():
+        return None
+    return video_view(project_media(root, relative))
 
 
 def video_view(path):
@@ -143,7 +175,7 @@ def adopt(root, queue, prompt_id, node_id, title):
                   'scene': scene, 'plan': execution['plan'], 'execution': execution,
                   'source': {'prompt_id': prompt_id, 'node_id': str(node_id)},
                   'preview': preview, 'duration_seconds': result['duration_seconds'], 'frame_count': result['frame_count']})
-    write_json(root / 'scenes.json', items)
+    write_json(contained(root, 'scenes.json'), items)
     return identity
 
 
@@ -153,15 +185,15 @@ def load_record(root, identity):
         raise ValueError("保存シーンが見つかりません。")
     for asset in item['scene']['assets']:
         if asset.get('file'):
-            path = contained(root, asset['file'])
+            path = project_media(root, asset['file'])
             asset['file'] = path.relative_to(Path(folder_paths.get_output_directory()).resolve()).as_posix() + ' [output]'
             reference_path(asset['file'])
-    item['video'] = video_view(contained(root, item['preview']))
+    item['video'] = project_preview(root, item)
     return item
 
 
 def refresh_batch(root, queue):
-    path = root / 'batch.json'
+    path = contained(root, 'batch.json')
     if not path.exists():
         return None
     state = json.loads(path.read_text(encoding='utf-8'))
@@ -210,7 +242,7 @@ def project_action(data, queue):
         if action == 'list':
             items = records(root)
             return {'scenes': [{'id': s['id'], 'title': s['title'], 'mode': s['scene']['mode'], 'cuts': len(s['plan']['shots']),
-                                'duration_seconds': s['duration_seconds'], 'video': video_view(contained(root, s['preview']))} for s in items],
+                                'duration_seconds': s['duration_seconds'], 'video': project_preview(root, s)} for s in items],
                     'batch': refresh_batch(root, queue), 'directory': str(root)}
         if action == 'load':
             return load_record(root, data['id'])
@@ -224,13 +256,22 @@ def project_action(data, queue):
                 if action == 'start':
                     raise ValueError("実行中のバッチがあります。完了または中止を待ってください。")
                 state['owner'] = data['owner']
-                write_json(root / 'batch.json', state)
+                write_json(contained(root, 'batch.json'), state)
                 return {'batch': state}
             if action == 'start':
-                ids = list(dict.fromkeys(data['ids']))
-                if not ids or not set(ids).issubset({s['id'] for s in records(root)}):
+                all_ids = [s['id'] for s in records(root)]
+                if 'start_index' in data:
+                    start = data['start_index']
+                    if type(start) is not int or not 1 <= start <= len(all_ids):
+                        raise ValueError(f"開始番号は1〜{len(all_ids)}で指定してください。")
+                    ids = all_ids[start - 1:]
+                else:
+                    ids = list(dict.fromkeys(data['ids']))
+                if not ids or not set(ids).issubset(all_ids):
                     raise ValueError("生成する保存シーンを選択してください。")
-                state = {'ids': ids, 'completed': [], 'result_node': str(data['result_node']), 'attempt': None}
+                ids = [identity for identity in all_ids if identity in ids]
+                state = {'ids': ids, 'completed': [], 'result_node': str(data['result_node']), 'attempt': None,
+                         'positions': [all_ids.index(identity) + 1 for identity in ids], 'total': len(all_ids)}
             elif not state or len(state['completed']) == len(state['ids']):
                 raise ValueError("再開する未完了シーンがありません。")
             state.update(status='ready', error='', owner=data['owner'])
@@ -254,7 +295,7 @@ def project_action(data, queue):
         else:
             raise ValueError("不明な操作です。")
         if state:
-            write_json(root / 'batch.json', state)
+            write_json(contained(root, 'batch.json'), state)
         return {'batch': state}
 
 
