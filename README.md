@@ -63,7 +63,8 @@ ComfyUIを再起動し、ブラウザを再読み込みしてこのJSONを開い
 
 素材は相対パスで保存します。ComfyUIのoutput外にあるプロジェクトの素材・プレビューは、標準の読み込み経路で扱えるよう`output/h3_scene_director/_external/`へコピーして使用します。`scenes.json`は読み込み時に書き換えず、`batch.json`は指定した元フォルダへ保存します。指定先には書き込み権限が必要です。従来どおり`output/h3_scene_director/`配下へ置いてプロジェクト名で読む方法も使えます。
 既存Capture用の `scenes.json` は変換しません。Director用プロジェクトとは分離しています。
-チェックポイント・潜在はContext-Loopの実行フォルダに残し、採用プロジェクトへはコピーしません。
+Directorの生成経路は `H3 Scene Segment Save` と `H3 Scene Assemble` でMP4・float32 WAV・小さなJSONだけを保存し、safetensorsチェックポイントは作成しません。Context Loopのカット間の映像・音声の状態は実行中のメモリで引き継ぎます。音声の重複部分もWAVへ保存し、従来と同じ音声結合処理を使用します。一括生成のシーン番号指定・未完了シーンからの再開は使えますが、失敗したシーンは先頭カットから再生成します。シーン内の途中カットからのディスク再開・潜在からの再出力には対応しません。
+既存のDirector workflowはComfyUIを終了してから `venv/Scripts/python.exe custom_nodes/ComfyUI-H3-Scene-Batch/remove_director_checkpoints.py <workflow.json>` で更新できます。元JSONを `.checkpoint-backup.json` に保存し、保存・結合ノードと必要な接続だけを変更します。再起動後は更新済みJSONを開いてください。Context Loop本体や過去のチェックポイントは変更・削除しません。生成動画の保存先は引き続き `output/h3_chains/<run>/final/` です。
 
 ### 生成と設定
 

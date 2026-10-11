@@ -111,12 +111,12 @@ def build_workflow(source, workflow_id):
     trim = create(1204, "MiniMaxH3LoopTrim", [("images", "IMAGE"), ("trim_frames", "INT"), ("audio", "AUDIO"), ("state", "H3_CHAIN_STATE")],
                   [("images", "IMAGE"), ("audio", "AUDIO"), ("images_with_overlap", "IMAGE"), ("overlap_frames", "INT")], [0, 24, True, 0], (4850, 150))
     trim["inputs"][1]["widget"] = {"name": "trim_frames"}
-    create(1205, "MiniMaxH3ChainSegmentSave", [("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("sampled_latent", "LATENT"), ("audio", "AUDIO"), ("images_with_overlap", "IMAGE"), ("denoised_latent", "LATENT")],
+    create(1205, "H3SceneSegmentSave", [("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("audio", "AUDIO")],
            [("segment", "H3_CHAIN_SEGMENT"), ("status", "STRING")], [], (4850, 500))
     create(1206, "MiniMaxH3ChainLoopEnd", [("flow", "H3_CHAIN_FLOW"), ("state", "H3_CHAIN_STATE"), ("images", "IMAGE"), ("sampled_latent", "LATENT"), ("segment", "H3_CHAIN_SEGMENT")],
            [("manifest", "H3_CHAIN_MANIFEST"), ("manifest_json", "STRING"), ("last_context_frames", "IMAGE"), ("last_context_latent", "LATENT")], ["off", "recursive_legacy"], (5300, 150))
-    create(1207, "MiniMaxH3ChainAssemble", [("manifest", "H3_CHAIN_MANIFEST")], [("video_path", "STRING")],
-           ["plan", "scene", 256, False, "", "plan", "off", "off"], (5750, 150), (430, 340))
+    create(1207, "H3SceneAssemble", [("manifest", "H3_CHAIN_MANIFEST")], [("video_path", "STRING")],
+           ["scene", 256], (5750, 150), (430, 340))
     create(1208, "PreviewAny", [("source", "*")], [], [], (900, 1050), (650, 280))
     create(1209, "PreviewAny", [("source", "*")], [], [], (5750, 600), (430, 180))
 
@@ -129,8 +129,7 @@ def build_workflow(source, workflow_id):
         (810, 0, 1203, "vae"), (811, 0, 1203, "audio_vae"),
         (1203, 0, 126, "conditioning"), (1203, 3, 125, "latent_image"),
         (122, 0, 1204, "images"), (121, 0, 1204, "audio"), (1203, 1, 1204, "trim_frames"), (1202, 0, 1204, "state"),
-        (1202, 0, 1205, "state"), (1204, 0, 1205, "images"), (125, 0, 1205, "sampled_latent"),
-        (1204, 1, 1205, "audio"), (1204, 2, 1205, "images_with_overlap"),
+        (1202, 0, 1205, "state"), (1204, 0, 1205, "images"), (1204, 1, 1205, "audio"),
         (1201, 0, 1206, "flow"), (1202, 0, 1206, "state"), (1204, 0, 1206, "images"),
         (125, 0, 1206, "sampled_latent"), (1205, 0, 1206, "segment"),
         (1206, 0, 1207, "manifest"), (1207, 0, 1209, "source"),

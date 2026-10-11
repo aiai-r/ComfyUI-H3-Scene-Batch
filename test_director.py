@@ -108,6 +108,8 @@ class DirectorTests(unittest.TestCase):
         chain = importlib.import_module(package.__name__ + ".chain_nodes")
         context_nodes = importlib.import_module(package.__name__ + ".nodes")
         classes = {**chain.CHAIN_NODE_CLASS_MAPPINGS, **context_nodes.NODE_CLASS_MAPPINGS}
+        from test_media import package as director_package
+        classes.update(director_package.NODE_CLASS_MAPPINGS)
         schemas = {name: {"input": cls.INPUT_TYPES(), "output": list(cls.RETURN_TYPES)} for name, cls in classes.items()}
         result = H3SceneDirector().build("trial", DEFAULT_PLAN, 736, 416, 4, 7)
         profile_node, plan_node = result["expand"].values()
