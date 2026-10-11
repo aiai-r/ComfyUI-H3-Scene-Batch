@@ -47,6 +47,29 @@ assert.match(third.writer.inputs.system_prompt, /prompt field itself, not only s
 const first = draftGraph(config, scene, threeCuts, "prompt", "Start", "", 0);
 assert.equal(JSON.parse(first.writer.inputs.custom_prompt).previous_prompt, undefined);
 assert.match(first.writer.inputs.system_prompt, /self-contained H3 prompt/);
+assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[1].prompt, undefined, "Only earlier cuts carry generated text as context");
+const endpointScene = { mode: "L2V", assets: [{ kind: "image", role: "last", file: "last.png" }] };
+const stalePlan = { shots: [{ id: "cut2", duration_seconds: 15, prompt: "She remains seated throughout.", start_state: "Already seated", end_state: "Still seated" }] };
+const instruction = "駅のホームから歩いて、電車に乗り、対面に座る日本の女学生。BGMや会話はなし。環境音のみ。";
+for (const selected of [0, null]) for (const action of ["prompt", "story"]) {
+  const output = draftGraph(config, endpointScene, stalePlan, action, instruction, "", selected, "<Picture 1>\nA student seated inside a train.");
+  const request = JSON.parse(output.writer.inputs.custom_prompt);
+  assert.equal(request.instruction, instruction);
+  assert.equal(request.include_previous, false);
+  assert.equal(request.previous_prompt, undefined);
+  assert.equal(request.last_frame_cut, 1);
+  assert.equal(request.references[0].label, "<Picture 1>");
+  assert.deepEqual(request.cuts, [{ id: "cut2", duration_seconds: 15 }]);
+  assert.doesNotMatch(output.writer.inputs.custom_prompt, /remains seated|Already seated|Still seated/);
+  assert.match(output.writer.inputs.system_prompt, /current instruction takes priority/);
+  assert.match(output.writer.inputs.system_prompt, /every requested action in order/);
+  assert.match(output.writer.inputs.system_prompt, /only the ending of the final cut/);
+}
+const endpointContinuation = JSON.parse(draftGraph(config, endpointScene, threeCuts, "prompt", "Enter", "", 1).writer.inputs.custom_prompt);
+assert.equal(endpointContinuation.last_frame_cut, 3, "Only the scene's actual final cut has the endpoint image");
+assert.equal(endpointContinuation.previous_prompt, "Walk to the gate");
+assert.equal(endpointContinuation.cuts[1].prompt, undefined);
+assert.equal(stalePlan.shots[0].prompt, "She remains seated throughout.", "Request construction does not overwrite existing prompts");
 assert.equal(graph.result.class_type, "PreviewAny");
 assert.equal(Object.values(graph).some(n => /Sampler|SaveVideo/.test(n.class_type)), false);
 assert.deepEqual({ config, plan, scene }, before);

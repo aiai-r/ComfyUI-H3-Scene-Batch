@@ -13,7 +13,7 @@ export function referenceDescriptions(scene) {
     const asset_index = scene.assets.indexOf(a);
     if (a.kind === "video" && a.use_audio) result.push({ asset_index, label: `<Audio ${++counts.audio}>`, kind: "audio", note: `Soundtrack of <Video ${counts.video + 1}>. ${a.note ?? ""}`, image_attached: false });
     const index = ++counts[a.kind];
-    const label = scene.mode === "R2V" ? `<${{ image: "Picture", audio: "Audio", video: "Video" }[a.kind]} ${index}>` : `${a.role} frame`;
+    const label = ["R2V", "L2V"].includes(scene.mode) ? `<${{ image: "Picture", audio: "Audio", video: "Video" }[a.kind]} ${index}>` : `${a.role} frame`;
     result.push({ asset_index, label, kind: a.kind, note: a.note ?? "", image_attached: a.kind === "image" });
   }
   return result;
@@ -60,10 +60,16 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
     "Durations include overlap; preserve the supplied cut count, order and durations. Do not compensate to reach a final total length.",
     scene.mode !== "T2V" ? "Use native reference labels only from the supplied mapping." : "",
     { I2V: "The first image anchors the start of the scene.",
-      L2V: "The last image anchors the end of the scene.",
+      L2V: [
+        "The supplied image <Picture 1> anchors only the ending of the final cut, identified by last_frame_cut. It is not a previous frame or an opening state.",
+        "Start from the situation requested by the user and describe every requested action in order, building a continuous path toward that ending. Do not replace the requested action sequence with a static description of the image.",
+        "For the final cut, make its end_state match the image's pose, objects and composition, and explicitly state in the prompt that <Picture 1> aligns with the end of this cut. Earlier cuts lead toward that state; they do not yet have an attached endpoint image.",
+        "Use the literal reference label <Picture 1>; never invent <last frame> or describe it as a preceding cut. A single-cut scene must contain the requested starting situation, actions and final image landing in that same cut.",
+      ].join("\n"),
       FL2V: "The first and last images anchor the start and end of the scene." }[scene.mode],
     scene.mode !== "T2V" ? "Use the supplied image_analysis as visual reference data. No images are attached at this writing stage." : "",
     scene.mode === "R2V" ? "No videos or audio are attached at this writing stage; audio/video notes are the only evidence for those media." : "",
+    "Write new content for the target cuts from the current instruction and story. The current instruction takes priority if the story or shared prompt conflicts with it. Preserve the requested action order and explicit audio restrictions.",
     "When story is absent, follow the user's instruction directly without adding an unsolicited plot.",
     action === "story"
       ? `Return a concise editable story outline in the language of the instruction, with a beginning/action/ending for ${partial ? "only the selected cut" : "each supplied cut"}. Return only the outline.`
@@ -73,12 +79,14 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
   const references = referenceDescriptions(scene);
   const request = action === "analysis" ? { task: "Describe the visible contents of the supplied image." }
     : { mode: scene.mode, instruction, story, scene_story: continuation ? sceneStory : "", include_previous: continuation, shared_prompt: plan.prompt_prefix ?? "",
+    ...(scene.mode === "L2V" ? { last_frame_cut: plan.shots.length } : {}),
     ...(partial && continuation ? { previous_prompt: plan.shots[selected - 1].prompt ?? "",
       previous_end_state: plan.shots[selected - 1].end_state ?? "" } : {}),
     ...(scene.mode !== "T2V" ? { image_analysis: analysis, references: references.map(r => ({ ...r, image_attached: false })) } : {}),
     selected_cut: partial ? selected + 1 : null,
     cuts: plan.shots.map((shot, i) => ({ id: shot.id ?? `cut${i + 1}`, duration_seconds: shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15,
-      length: shot.length, prompt: shot.prompt ?? "", start_state: shot.start_state, end_state: shot.end_state }))
+      length: shot.length,
+      ...(partial && continuation && i < selected ? { prompt: shot.prompt ?? "", start_state: shot.start_state, end_state: shot.end_state } : {}) }))
       .filter((_, i) => !partial || i === selected || continuation && i < selected) };
   const graph = {
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },

@@ -46,7 +46,7 @@ bytes.set("copy.png", "one");
 const copy = { kind: "image", file: "another-folder/copy.png", role: "first", note: "New note" };
 await llm.matchImage(copy);
 assert.equal(llm.imageRecord(copy), llm.imageRecord(scene.assets[0]), "Same bytes under a new name share the analysis immediately after import");
-for (const [mode, role, label] of [["R2V", "reference", "<Picture 1>"], ["I2V", "first", "first frame"], ["L2V", "last", "last frame"]]) {
+for (const [mode, role, label] of [["R2V", "reference", "<Picture 1>"], ["I2V", "first", "first frame"], ["L2V", "last", "<Picture 1>"]]) {
   assert.equal(await llm.analyze({ mode, assets: [{ ...copy, role }] }), `${label}\nObservations 4`);
 }
 const paired = { mode: "FL2V", assets: [{ ...copy, role: "first" }, { ...scene.assets[0], role: "last" }] };
