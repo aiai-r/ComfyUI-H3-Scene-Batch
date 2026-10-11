@@ -22,6 +22,7 @@ Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectVa
 let extension, draftOpened = false, queuedRecord;
 const uploaded = [];
 const llmCalls = [], history = new Map();
+let promptOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
   async fetchApi(path, request) {
@@ -32,7 +33,8 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
       const stage = graph.images ? 'analysis' : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
       llmCalls.push({ stage, data });
       const text = stage === 'analysis' ? '人物が庭にいる' : stage === 'story' ? '庭を歩いて振り返る'
-        : JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id })) });
+        : promptOutput ?? JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id, start_state: 'Start ' + c.id, end_state: 'End ' + c.id })) });
+      if (stage === 'prompt') onPrompt();
       const id = String(llmCalls.length); history.set(id, { status: { completed: true }, outputs: { result: { text: [text] } } });
       return { ok: true, json: async () => ({ prompt_id: id }) };
     }
@@ -190,11 +192,12 @@ assert.equal(llmCalls.at(-1).data.selected_cut, 2);
 assert.equal(llmCalls.at(-1).data.include_previous, true);
 assert.ok(llmCalls.at(-1).data.image_analysis.includes('手動で確認した人物'));
 assert.equal(field('カット 2のストーリー').value, '庭を歩いて振り返る');
-assert.deepEqual(JSON.parse(node.widgets.find(w => w.name === 'plan_json').value), prior);
-await byText('草案を適用').onclick(); assertHealthy();
 const applied = JSON.parse(node.widgets.find(w => w.name === 'plan_json').value);
 assert.deepEqual(applied.shots[0], prior.shots[0]);
 assert.equal(applied.shots[1].prompt, 'Generated ' + applied.shots[1].id);
+assert.equal(field('カット 2 のPrompt').value, applied.shots[1].prompt);
+assert.equal(byText('草案を適用'), undefined);
+assert.equal(byText('草案を破棄'), undefined);
 const previous = [...root.querySelectorAll('label')].find(l => l.textContent.includes('前カットの終了状況をPromptに含める')).querySelector('input');
 assert.equal(previous.checked, true, 'Continuation defaults ON for cut 2');
 previous.checked = false; previous.onchange();
@@ -204,10 +207,8 @@ assert.equal(llmCalls.at(-1).data.include_previous, false);
 assert.equal(llmCalls.at(-1).data.cuts.length, 1);
 assert.equal(llmCalls.at(-1).data.story, '');
 assert.equal(llmCalls.at(-1).data.instruction, '振り返る');
-field('カット 2 のPrompt').value = 'Manual after draft'; field('カット 2 のPrompt').oninput();
-await byText('草案を適用').onclick();
-assert.match(root.querySelector('[role="alert"]').textContent, /変更/);
-await byText('草案を破棄').onclick();
+field('カット 2 のPrompt').value = 'Manual after generation'; field('カット 2 のPrompt').oninput();
+assert.equal(JSON.parse(node.widgets.find(w => w.name === 'plan_json').serializeValue()).shots[1].prompt, 'Manual after generation');
 await root.querySelector('[aria-label="カット 1"]').onclick();
 assert.equal(field('カット 1の日本語指示').value, '庭を歩く');
 await byText('Prompt作成').onclick(); assertHealthy();
@@ -217,5 +218,44 @@ node.onConfigure();
 assert.equal(field('カット 1の日本語指示').value, '庭を歩く');
 await root.querySelector('[aria-label="カット 2"]').onclick();
 assert.equal([...root.querySelectorAll('label')].find(l => l.textContent.includes('前カットの終了状況をPromptに含める')).querySelector('input').checked, false, 'Saved OFF survives reload');
-console.log("Director DOM: inline LLM actions, per-cut instructions/story, image reuse, previous-cut opt-out, reviewed apply, stale-draft protection and settings entry passed.");
+// Reproduce the reported workflow: two blank cuts whose IDs differ from their tab numbers.
+const planWidget = node.widgets.find(w => w.name === 'plan_json');
+planWidget.value = JSON.stringify({ prompt_prefix: '', shots: [
+  { id: 'cut2', prompt: '', duration_seconds: 15 }, { id: 'cut3', prompt: '', duration_seconds: 15 },
+] });
+node.onConfigure();
+await root.querySelector('[aria-label="カット 1"]').onclick();
+await byText('Prompt作成').onclick(); assertHealthy();
+assert.equal(field('カット 1 のPrompt').value, 'Generated cut2');
+await root.querySelector('[aria-label="カット 2"]').onclick();
+await byText('Prompt作成').onclick(); assertHealthy();
+assert.equal(llmCalls.at(-1).data.previous_prompt, 'Generated cut2');
+assert.equal(llmCalls.at(-1).data.previous_end_state, 'End cut2');
+assert.equal(field('カット 2 のPrompt').value, 'Generated cut3');
+const generated = JSON.parse(planWidget.serializeValue());
+assert.deepEqual(generated.shots.map(s => s.prompt), ['Generated cut2', 'Generated cut3']);
+await byText('このシーンを生成').onclick(); assertHealthy();
+assert.deepEqual(queuedRecord.plan, generated);
+node.onConfigure(); assertHealthy();
+assert.deepEqual(JSON.parse(planWidget.serializeValue()), generated);
+
+for (const output of ['{"shots":[{""start_state":"broken"}]}', '{"shots":[{"id":"cut2","prompt":"Wrong cut"}]}']) {
+  promptOutput = output;
+  await byText('Prompt作成').onclick();
+  assert.ok(root.querySelector('[role="alert"]').textContent);
+  assert.deepEqual(JSON.parse(planWidget.serializeValue()), generated, 'Invalid LLM output must not overwrite prompts');
+}
+promptOutput = null;
+onPrompt = () => { field('カット 2 のPrompt').value = 'Edited while generating'; field('カット 2 のPrompt').oninput(); };
+await byText('Prompt作成').onclick();
+assert.match(root.querySelector('[role="alert"]').textContent, /処理中にカットが変更/);
+assert.equal(JSON.parse(planWidget.serializeValue()).shots[1].prompt, 'Edited while generating');
+onPrompt = () => {};
+await byText('ストーリー作成').onclick(); assertHealthy();
+assert.equal(JSON.parse(planWidget.serializeValue()).shots[1].prompt, 'Edited while generating', 'Story-only generation preserves prompts');
+const bulk = [...root.querySelectorAll('details')].find(e => e.querySelector('summary')?.textContent === '補助操作：全カットまとめて作成');
+await [...bulk.querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
+assert.equal(llmCalls.at(-1).data.selected_cut, null);
+assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt), ['Generated cut2', 'Generated cut3']);
+console.log("Director DOM: direct prompt updates, sequential cut continuity, RUN serialization, invalid-output preservation, concurrent edits, story-only and bulk generation passed.");
 console.log('Director UI: mode buttons, 9/3/3 lanes, shared boundary slots, locked L2V start, slot drops, pointer swapping/moving, reference order, replacement, removal and reload passed.');

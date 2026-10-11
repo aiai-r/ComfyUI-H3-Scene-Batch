@@ -65,7 +65,6 @@ function attachDirector(node) {
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
   const llm = new DirectorLLM(node, message => { status.textContent = message; });
   let llmBusy = false;
-  const pendingDrafts = new Map();
 
   function element(parent, tag, className = "", text = "") { const e = document.createElement(tag); e.className = className; e.textContent = text; parent.append(e); return e; }
   function report(e) { error.textContent = e.message ?? String(e); }
@@ -181,36 +180,20 @@ function attachDirector(node) {
     for (const [text, action] of [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]]) {
       button(buttons, text, () => llmTask(async () => {
         const baseline = structuredClone(plan), sourceScene = structuredClone(scene);
-        pendingDrafts.delete(scope);
-        const drafts = await llm.create(baseline, sourceScene, selected, {
+        const prompts = await llm.create(baseline, sourceScene, selected, {
           instruction: state.instructions[scope] ?? "", story: state.stories[scope] ?? "",
           includePrevious: selected === null || selected > 0 && (state.previous[scope] ?? true), sceneStory: state.stories.all ?? "",
         }, action, value => { state.stories[scope] = value; changed(); });
-        if (drafts) pendingDrafts.set(scope, { drafts, baseline, scene: sourceScene });
-        status.textContent = drafts ? `${label}のPrompt草案を確認し、「草案を適用」を押してください。`
+        if (prompts) {
+          collect();
+          if (JSON.stringify(scene) !== JSON.stringify(sourceScene)) throw new Error("処理中に素材・モードが変わりました。Promptを再作成してください。");
+          plan = applyDraft(plan, baseline, prompts); save();
+        }
+        status.textContent = prompts ? `${label}のPromptを作成し、Prompt欄に反映しました。`
           : `${label}のストーリーを作成しました。ストーリー欄で確認・編集できます。`;
       }));
     }
     element(section, "div", "muted", "Prompt作成：ストーリーがあれば使用し、空欄なら日本語指示から作成します。");
-    const pending = pendingDrafts.get(scope);
-    if (pending) {
-      const panel = element(section, "div", "llm-drafts");
-      for (const item of pending.drafts) {
-        const text = input(panel, `カット ${item.index + 1} のPrompt草案`, item.prompt, true); text.rows = 5;
-        text.oninput = () => { item.prompt = text.value; };
-        const details = element(panel, "details"); element(details, "summary", "", "草案の開始・終了状態");
-        for (const [key, name] of [["start_state", "開始状態"], ["end_state", "終了状態"]]) {
-          const field = input(details, name, item[key], true); field.oninput = () => { item[key] = field.value; };
-        }
-      }
-      button(panel, "草案を適用", () => {
-        collect();
-        if (JSON.stringify(scene) !== JSON.stringify(pending.scene)) throw new Error("素材・モードが変わりました。草案を作り直してください。");
-        if (pending.drafts.some(d => !d.prompt.trim())) throw new Error("Prompt草案が空欄です。");
-        plan = applyDraft(plan, pending.baseline, pending.drafts); pendingDrafts.delete(scope); save(); render();
-      });
-      button(panel, "草案を破棄", () => { pendingDrafts.delete(scope); render(); });
-    }
   }
   function preview(parent, asset, small = false) {
     if (!asset.file) return element(parent, "span", "symbol", "未選択");
@@ -421,7 +404,7 @@ function attachDirector(node) {
       if (plan.shots.length === 1) throw new Error("1カットは必要です。");
       collect(); const scope = `cut:${plan.shots[cut].id ?? cut}`, state = writingState();
       for (const values of [state.instructions, state.stories, state.previous]) delete values[scope];
-      pendingDrafts.delete(scope); plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render();
+      plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render();
     });
     renderWriting(editor, cut);
     const prompt = input(editor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 7;
@@ -437,7 +420,6 @@ function attachDirector(node) {
         for (const values of [state.instructions, state.stories, state.previous]) {
           if (oldScope in values) { values[newScope] = values[oldScope]; delete values[oldScope]; }
         }
-        pendingDrafts.delete(oldScope);
       }
       if (start.value || "start_state" in shot) plan.shots[cut].start_state = start.value;
       if (end.value || "end_state" in shot) plan.shots[cut].end_state = end.value;

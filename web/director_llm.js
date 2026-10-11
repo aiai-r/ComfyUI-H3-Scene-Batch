@@ -108,7 +108,7 @@ export function readDraft(text, plan, selected = null) {
 }
 
 export function applyDraft(current, baseline, drafts) {
-  if (JSON.stringify(current) !== JSON.stringify(baseline)) throw new Error("草案作成後にノードのカットが変更されています。閉じて開き直してください。");
+  if (JSON.stringify(current) !== JSON.stringify(baseline)) throw new Error("処理中にカットが変更されています。Promptを再作成してください。");
   const result = structuredClone(current);
   for (const { index, prompt, start_state, end_state } of drafts) {
     result.shots[index] = { ...result.shots[index], prompt, start_state, end_state };

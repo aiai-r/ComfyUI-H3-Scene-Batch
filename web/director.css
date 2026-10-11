@@ -61,7 +61,6 @@
 .h3-director .prompt { min-height:155px; }
 .h3-director .analysis-badge { position:absolute; top:43px; left:6px; font-size:10px; background:#14232de6; padding:2px 4px; pointer-events:none; }
 .h3-director .cut-writing { display:flex; flex-direction:column; gap:8px; padding:10px; border:1px solid #344452; border-radius:6px; }
-.h3-director .llm-drafts { padding:8px; border:1px solid #d6ae6a; border-radius:5px; }
 .h3-director[data-llm-busy=true] .cut-writing { opacity:.65; }
 .h3-director details { margin:9px 0; }
 .h3-director summary { cursor:pointer; color:#aebcd5; }

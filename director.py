@@ -89,7 +89,7 @@ class H3SceneDirector:
     RETURN_NAMES = ("plan", "summary", "scene")
     FUNCTION = "build"
     CATEGORY = "H3 Scene Batch"
-    DESCRIPTION = "Edit references and cuts for one independent scene. Draft prompts in the LLM dialog, then render from finalized prompts."
+    DESCRIPTION = "Edit references and cuts for one independent scene. Generate prompts directly into each cut, then render the scene."
 
     @classmethod
     def IS_CHANGED(cls, scene_json='{"mode":"R2V","assets":[]}', run_name="auto", **kwargs):
