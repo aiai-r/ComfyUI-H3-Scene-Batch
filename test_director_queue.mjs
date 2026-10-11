@@ -16,13 +16,17 @@ const template = { output: {
   steps: { class_type: "PrimitiveInt", inputs: { value: 12 } },
 }, workflow: { nodes: [{ id: 1200, widgets_values: ["old", "old", "old", false], properties: { keep: true } }] } };
 const phases = [];
-const app = { graphToPrompt: async () => structuredClone(template), rootGraph: { _nodes: [{ widgets: [{
+const reactive = value => new Proxy(value, { get(target, key) {
+  const item = target[key]; return item && typeof item === "object" ? reactive(item) : item;
+} });
+const app = { graphToPrompt: async () => reactive(template), rootGraph: { _nodes: [{ widgets: [{
   beforeQueued: () => phases.push("before"), afterQueued: () => phases.push("after"),
 }] }] } };
 const { sceneRequest, resultNode, DirectorQueue } = new Function("app", "api", "applyPromotedWidgetControl", source + "\nreturn {sceneRequest,resultNode,DirectorQueue};")(app, api, () => {});
 const record = { plan: { shots: [{ prompt: "Garden", seed: "18446744073709551615", duration_seconds: 15 }, { prompt: "Pond", seed: "0", duration_seconds: 15 }] }, scene: { mode: "T2V", assets: [] } };
 const before = structuredClone(template);
-const graph = sceneRequest(template, 1200, record, { run_name: "unique-scene" }, true);
+assert.throws(() => structuredClone(reactive(template)), { name: "DataCloneError" });
+const graph = sceneRequest(reactive(template), 1200, record, { run_name: "unique-scene" }, true);
 assert.deepEqual(template, before);
 assert.deepEqual(graph.output.model, template.output.model);
 assert.deepEqual(graph.output.steps, template.output.steps);
@@ -31,10 +35,13 @@ assert.deepEqual(JSON.parse(graph.output[1200].inputs.plan_json), record.plan);
 assert.equal(graph.workflow.nodes[0].widgets_values[0], "unique-scene");
 assert.equal(JSON.parse(graph.workflow.nodes[0].widgets_values[2]).mode, "T2V");
 assert.equal(resultNode(template, 1200), "1211");
+assert.doesNotThrow(() => structuredClone(graph));
 const queue = new DirectorQueue({ id: 1200, properties: {} }, () => {}, () => {});
 const task = queue.generate(record);
 while (!queued) await new Promise(resolve => setImmediate(resolve));
 const promptId = calls.find(c => c.path === "/prompt").body.prompt_id;
+assert.deepEqual(JSON.parse(calls.find(c => c.path === "/prompt").body.prompt[1200].inputs.plan_json), record.plan);
+assert.deepEqual(template, before, "Submitting a scene must not mutate the live workflow");
 await queue.stop();
 queued();
 await task;

@@ -10,7 +10,7 @@ export async function projectRequest(project, action, values = {}) {
 }
 
 export function sceneRequest(template, directorId, record, attempt, currentSettings) {
-  const value = structuredClone(template);
+  const value = JSON.parse(JSON.stringify(template));
   const inputs = value.output[String(directorId)]?.inputs;
   if (!inputs) throw new Error("Directorが実行グラフにありません。");
   Object.assign(inputs, { plan_json: JSON.stringify(record.plan), scene_json: JSON.stringify(record.scene), run_name: attempt.run_name, use_current_settings: currentSettings });
