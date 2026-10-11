@@ -44,7 +44,7 @@ function attachDirector(node) {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault(); event.stopPropagation(); report(new Error("モードに対応する素材欄へドロップしてください。"));
   };
-  const top = element(root, "div", "row");
+  const top = element(root, "div", "row"); top.style.alignItems = "flex-end";
   const project = input(top, "プロジェクト", node.properties.h3_project ?? "MyScenes");
   project.placeholder = "プロジェクト名 または サーバー上の絶対パス";
   project.title = "scenes.jsonがあるフォルダを指定します。クラウドではクラウド側のパスを入力してください。";
@@ -57,7 +57,7 @@ function attachDirector(node) {
     const data = await projectRequest(project.value, "open");
     status.textContent = `保存先を開きました：${data.directory}`;
   });
-  openProject.title = "プロジェクトの保存フォルダーを開く"; openProject.style.alignSelf = "flex-end";
+  openProject.title = "プロジェクトの保存フォルダーを開く";
   const tabs = element(root, "div", "tabs section");
   const createTab = button(tabs, "作成", () => switchTab(false));
   const libraryTab = button(tabs, "保存済み・一括生成", () => { switchTab(true); return refreshLibrary(); });
