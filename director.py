@@ -74,7 +74,7 @@ class H3SceneDirector:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "run_name": ("STRING", {"default": "auto", "tooltip": "auto creates a separate Context-Loop run for each scene."}),
+            "run_name": ("STRING", {"default": "auto", "tooltip": "auto creates a separate output folder for each scene generation."}),
             "plan_json": ("STRING", {"default": DEFAULT_PLAN, "multiline": True, "dynamicPrompts": False}),
             "width": ("INT", {"forceInput": True}),
             "height": ("INT", {"forceInput": True}),

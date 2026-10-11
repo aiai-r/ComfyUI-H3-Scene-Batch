@@ -303,11 +303,13 @@ assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt
 console.log("Director DOM: direct prompt updates, sequential cut continuity, RUN serialization, invalid-output preservation, concurrent edits, story-only and bulk generation passed.");
 console.log('Director UI: mode buttons, 9/3/3 lanes, shared boundary slots, locked L2V start, slot drops, pointer swapping/moving, reference order, replacement, removal and reload passed.');
 libraryData = { directory: '/workspace/MyScenes', scenes: Array.from({ length: 40 }, (_, i) => ({ id: `s${i + 1}`, title: `Scene ${i + 1}`, mode: 'T2V', cuts: 2, video: null })),
-  batch: { ids: ['s12', 's13'], positions: [12, 13], total: 40, completed: [{ id: 's12', video: { filename: 'done.mp4' } }], status: 'error', error: 'Interrupted' } };
+  batch: { ids: ['s12', 's13'], positions: [12, 13], total: 40, completed: [{ id: 's12', video: { project: '/workspace/MyScenes', subfolder: 'batches/test', filename: 'done.mp4' } }], status: 'error', error: 'Interrupted' } };
 field('プロジェクト').value = '/workspace/MyScenes'; field('プロジェクト').onchange();
 await byText('読込').onclick(); assertHealthy();
 assert.equal(projectCalls.at(-1).project, '/workspace/MyScenes');
 assert.equal(node.properties.h3_project, '/workspace/MyScenes');
+assert.deepEqual(JSON.parse(node.widgets.find(w => w.name === 'scene_json').serializeValue()).output, { project: '/workspace/MyScenes' });
+assert.match(root.querySelector('a').href, /h3_scene_director\/video\?/);
 assert.equal(root.querySelectorAll('.library-item').length, 40);
 assert.ok(root.textContent.includes('40. Scene 40'));
 assert.ok(root.textContent.includes('エラー位置：シーン 13/40'));

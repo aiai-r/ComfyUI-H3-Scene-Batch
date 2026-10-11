@@ -11,7 +11,7 @@ import av
 import torch
 
 from test_media import package
-from remove_director_checkpoints import migrate
+from remove_director_checkpoints import migrate, connect_project_outputs
 
 output = importlib.import_module(package.__name__ + '.director_output')
 project = importlib.import_module(package.__name__ + '.director_project')
@@ -32,12 +32,23 @@ class DirectorOutputTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.enterContext(patch.dict(sys.modules, {self.chain.__name__: self.chain}))
-        self.enterContext(patch.object(output.folder_paths, 'get_output_directory', return_value=str(self.root)))
+        self.enterContext(patch.object(project.folder_paths, 'get_output_directory', return_value=str(self.root / 'comfy-output')))
         self.enterContext(patch.dict(output.nodes.NODE_CLASS_MAPPINGS, {'MiniMaxH3ChainLoopEnd': self.chain.MiniMaxH3ChainLoopEnd}))
         self.enterContext(patch.object(self.chain, '_st_save', side_effect=AssertionError('No checkpoint writes')))
         self.enterContext(patch.object(self.chain, '_st_load', side_effect=AssertionError('No checkpoint reads')))
 
     def test_two_cut_audio_video_and_live_continuity_without_checkpoints(self):
+        for external in (False, True):
+            with self.subTest(external=external):
+                self.check_two_cut_output(external)
+
+    def check_two_cut_output(self, external):
+        root = self.root / 'cloud upload' if external else project.project_path('MyScenes')
+        root.mkdir(parents=True, exist_ok=True)
+        project.write_json(root / 'scenes.json', [])
+        destination = {'project': str(root) if external else 'MyScenes',
+                       **({'directory': 'batches/batch-test/scene_0012_attempt1'} if external else {})}
+        scene = {'mode': 'T2V', 'assets': [], 'output': destination}
         chain = self.chain
         policy = chain.MiniMaxH3GenerationProfile().build('Hard picture + smooth audio', 'Generate audio')[0]
         authored = json.dumps({'shots': [{'id': 'a', 'prompt': 'First', 'length': 73}, {'id': 'b', 'prompt': 'Second', 'length': 73}]})
@@ -61,7 +72,7 @@ class DirectorOutputTests(unittest.TestCase):
                 audio.update({chain.AUDIO_WITH_OVERLAP_WAVEFORM_KEY: torch.full((1, 2, raw), 0.2),
                               chain.AUDIO_WITH_OVERLAP_FRAMES_KEY: shot['raw_frames'],
                               chain.AUDIO_TRIM_FRAMES_KEY: shot['raw_frames'] - frames})
-            segment = output.H3SceneSegmentSave().save(state, images, audio)[0]
+            segment = output.H3SceneSegmentSave().save(state, images, audio, scene)[0]
             delivered.append(segment)
             original_audio.append({'segment': segment, 'delivered': waveform[0],
                 'overlap': audio[chain.AUDIO_WITH_OVERLAP_WAVEFORM_KEY][0] if index == 2 else None,
@@ -81,7 +92,9 @@ class DirectorOutputTests(unittest.TestCase):
         def assemble_audio(records, rate):
             audio = real_assembly(records, rate); seen.append(audio); return audio
         with patch.object(chain, '_assemble_generated_audio_records', side_effect=assemble_audio):
-            path = output.H3SceneAssemble().assemble(manifest, 'scene', 256)[0]
+            path = output.H3SceneAssemble().assemble(manifest, 'scene', 256, scene)[0]
+        self.assertEqual(Path(path).relative_to(root).as_posix(),
+                         'batches/batch-test/scene_0012_attempt1/scene.mp4' if external else 'renders/director_test/scene.mp4')
         boundary = chain.sample_boundary_from_frames(73 - 39, 32000)
         torch.testing.assert_close(seen[0]['waveform'][..., :boundary], torch.full((2, boundary), 0.1))
         torch.testing.assert_close(seen[0]['waveform'], real_assembly(original_audio, 32000)['waveform'], rtol=0, atol=0)
@@ -90,17 +103,40 @@ class DirectorOutputTests(unittest.TestCase):
             self.assertEqual(container.streams.video[0].frames, sum(s['delivered_frames'] for s in delivered))
             self.assertEqual(len(container.streams.audio), 1)
             self.assertEqual(sum(1 for _ in container.decode(video=0)), manifest['total_delivered_frames'])
-        scene = {'mode': 'T2V', 'assets': [], 'execution': {'run_name': plan['run_name'], 'plan': {'shots': [{}, {}]}, 'asset_hashes': {}}}
+        scene['execution'] = {'run_name': plan['run_name'], 'plan': {'shots': [{}, {}]}, 'asset_hashes': {}}
         result = project.H3SceneResult().record(path, scene, manifest_json)['ui']
+        self.assertEqual(project.video_file(result['h3_scene_result'][0]['video']), Path(path))
         queue = types.SimpleNamespace(get_history=lambda pid: {pid: {'status': {'status_str': 'success'}, 'outputs': {'result': result}}})
-        project.adopt(self.root / 'project', queue, 'test', 'result', 'Two cuts')
-        saved = json.loads((self.root / 'project/scenes.json').read_text(encoding='utf-8'))[0]
+        project.adopt(root, queue, 'test', 'result', 'Two cuts')
+        saved = json.loads((root / 'scenes.json').read_text(encoding='utf-8'))[0]
+        self.assertNotIn('output', saved['scene'])
         self.assertEqual([s['prompt'] for s in saved['plan']['shots']], ['First', 'Second'])
         self.assertEqual(list(self.root.rglob('*.safetensors')), [])
         self.assertEqual(list(self.root.rglob('checkpoints')), [])
-        self.assertNotEqual(output.H3SceneAssemble().assemble(manifest, 'scene', 256)[0], path)
+        self.assertEqual(list(self.root.rglob('h3_chains')), [])
+        self.assertNotEqual(output.H3SceneAssemble().assemble(manifest, 'scene', 256, scene)[0], path)
         with self.assertRaises(ValueError):
-            output.H3SceneAssemble().assemble(manifest, '../../escape', 256)
+            output.H3SceneAssemble().assemble(manifest, '../../../../../escape', 256, scene)
+        with self.assertRaises(ValueError):
+            output.run_directory({'output': {**destination, 'directory': '../escape'}}, 'trial')
+
+    def test_project_output_wiring_preserves_workflow(self):
+        root = Path(__file__).resolve().parents[2]
+        source = json.loads((root / 'user/default/workflows/video_minimax_h3_scene_director_dev.project-output-backup.json').read_bytes())
+        actual = connect_project_outputs(source)
+        self.assertEqual(connect_project_outputs(actual), actual)
+        for before, after in zip([source, *source['definitions']['subgraphs']], [actual, *actual['definitions']['subgraphs']]):
+            old_links = {l['id'] if isinstance(l, dict) else l[0] for l in before['links']}
+            added = [l for l in after['links'] if (l['id'] if isinstance(l, dict) else l[0]) not in old_links]
+            self.assertEqual(len(added), 1)
+            for old, new in zip(before['nodes'], after['nodes']):
+                expected = json.loads(json.dumps(new))
+                if old['type'] in ('H3SceneSegmentSave', 'H3SceneAssemble'):
+                    self.assertEqual(expected['inputs'][-1]['name'], 'scene')
+                    expected['inputs'].pop()
+                for output in expected.get('outputs', []):
+                    if output.get('links'): output['links'] = [i for i in output['links'] if i in old_links]
+                self.assertEqual(expected, old)
 
     def test_workflow_migration_preserves_other_nodes_and_wiring(self):
         root = Path(__file__).resolve().parents[2]

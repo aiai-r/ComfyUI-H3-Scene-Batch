@@ -21,8 +21,9 @@ export function sceneRequest(template, directorId, record, attempt, currentSetti
   const value = JSON.parse(JSON.stringify(template));
   const inputs = value.output[String(directorId)]?.inputs;
   if (!inputs) throw new Error("Directorが実行グラフにありません。");
-  Object.assign(inputs, { plan_json: JSON.stringify(record.plan), scene_json: JSON.stringify(record.scene), run_name: attempt.run_name, use_current_settings: currentSettings });
   const node = value.workflow.nodes.find(n => String(n.id) === String(directorId));
+  const scene = { ...record.scene, output: attempt.output ?? { project: record.scene.output?.project ?? node.properties?.h3_project ?? "MyScenes" } };
+  Object.assign(inputs, { plan_json: JSON.stringify(record.plan), scene_json: JSON.stringify(scene), run_name: attempt.run_name, use_current_settings: currentSettings });
   node.widgets_values = [inputs.run_name, inputs.plan_json, inputs.scene_json, currentSettings];
   if (node.widgets_values_named) Object.assign(node.widgets_values_named, { run_name: inputs.run_name, plan_json: inputs.plan_json, scene_json: inputs.scene_json, use_current_settings: currentSettings });
   return value;

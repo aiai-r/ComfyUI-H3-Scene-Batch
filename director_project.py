@@ -83,16 +83,25 @@ def project_preview(root, item):
     relative = item.get('preview')
     if not relative or not contained(root, relative).is_file():
         return None
-    return video_view(project_media(root, relative))
+    return video_view(contained(root, relative), str(root))
 
 
-def video_view(path):
-    root = Path(folder_paths.get_output_directory()).resolve()
+def video_view(path, project=None):
+    root = project_path(project) if project is not None else Path(folder_paths.get_output_directory()).resolve()
     path = contained(root, path)
     if not path.is_file():
         raise ValueError("完成動画が見つかりません。")
     relative = path.relative_to(root)
-    return {'filename': relative.name, 'subfolder': relative.parent.as_posix(), 'type': 'output'}
+    return {'filename': relative.name, 'subfolder': relative.parent.as_posix(), 'type': 'output',
+            **({'project': project} if project is not None else {})}
+
+
+def video_file(view):
+    root = project_path(view['project']) if 'project' in view else Path(folder_paths.get_output_directory()).resolve()
+    path = contained(root, view['subfolder'] + '/' + view['filename'])
+    if path.suffix.lower() != '.mp4' or not path.is_file():
+        raise ValueError('完成動画が見つかりません。')
+    return path
 
 
 class H3SceneResult:
@@ -121,7 +130,7 @@ class H3SceneResult:
             shot.update(prompt=segment['scene_prompt'], seed=str(segment['seed']), length=segment['raw_frames'], steps=segment['steps'])
             for key in ('frames', 'prompt_seed_mode', 'prompt_seed'):
                 shot.pop(key, None)
-        view = video_view(video_path)
+        view = video_view(video_path, scene.get('output', {}).get('project'))
         with av.open(video_path) as container:
             stream = container.streams.video[0]
             seconds = float(stream.duration * stream.time_base) if stream.duration is not None else None
@@ -147,6 +156,7 @@ def adopt(root, queue, prompt_id, node_id, title):
     if any(item['id'] == identity for item in items):
         return identity
     scene = result['scene']
+    scene.pop('output', None)
     execution = scene.pop('execution')
     assets = []
     for index, asset in enumerate(scene['assets']):
@@ -158,9 +168,7 @@ def adopt(root, queue, prompt_id, node_id, title):
         relative = f'assets/{identity}/{index:03d}{source.suffix}'
         assets.append((source, contained(root, relative), asset, relative, execution['asset_hashes'][str(index)]))
     video = result['video']
-    source_video = contained(Path(folder_paths.get_output_directory()), video['subfolder'] + '/' + video['filename'])
-    if not source_video.is_file():
-        raise ValueError("完成動画が見つかりません。")
+    source_video = video_file(video)
     for source, destination, asset, relative, digest in assets:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
@@ -197,6 +205,9 @@ def refresh_batch(root, queue):
     if not path.exists():
         return None
     state = json.loads(path.read_text(encoding='utf-8'))
+    for completed in state['completed']:
+        if 'project' in completed.get('video', {}):
+            completed['video']['project'] = str(root)
     attempt = state.get('attempt')
     if not attempt:
         return state
@@ -271,7 +282,8 @@ def project_action(data, queue):
                     raise ValueError("生成する保存シーンを選択してください。")
                 ids = [identity for identity in all_ids if identity in ids]
                 state = {'ids': ids, 'completed': [], 'result_node': str(data['result_node']), 'attempt': None,
-                         'positions': [all_ids.index(identity) + 1 for identity in ids], 'total': len(all_ids)}
+                         'positions': [all_ids.index(identity) + 1 for identity in ids], 'total': len(all_ids),
+                         'directory': 'batches/' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid4().hex[:8]}
             elif not state or len(state['completed']) == len(state['ids']):
                 raise ValueError("再開する未完了シーンがありません。")
             state.update(status='ready', error='', owner=data['owner'])
@@ -280,6 +292,10 @@ def project_action(data, queue):
                 raise ValueError("この画面から開始した待機中バッチではありません。")
             prompt_id = str(uuid4())
             state['attempt'] = {'prompt_id': prompt_id, 'run_name': 'director_' + uuid4().hex[:16], 'created': time.time()}
+            state.setdefault('directory', 'batches/' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid4().hex[:8])
+            position = state.get('positions', list(range(1, len(state['ids']) + 1)))[len(state['completed'])]
+            state['attempt']['output'] = {'project': str(root),
+                'directory': f"{state['directory']}/scene_{position:04d}_{state['attempt']['run_name'][9:]}"}
             state['status'] = 'submitting'
         elif action == 'stop':
             if state and state.get('attempt'):
@@ -304,5 +320,14 @@ async def project_request(request):
     try:
         data = await request.json()
         return web.json_response(await asyncio.to_thread(project_action, data, PromptServer.instance.prompt_queue))
+    except (ValueError, KeyError, OSError) as error:
+        return web.json_response({'error': str(error)}, status=400)
+
+
+@PromptServer.instance.routes.get('/h3_scene_director/video')
+async def project_video(request):
+    try:
+        path = await asyncio.to_thread(video_file, request.query)
+        return web.FileResponse(path)
     except (ValueError, KeyError, OSError) as error:
         return web.json_response({'error': str(error)}, status=400)

@@ -57,14 +57,18 @@ ComfyUIを再起動し、ブラウザを再読み込みしてこのJSONを開い
 - `assets/`: 使用した参照画像・音声・動画のコピー。
 - `previews/`: 採用した完成動画のコピー。
 - `batch.json`: 今回の一括生成の対象・完了位置・実行ID・結果。
+- `renders/<実行名>/scene.mp4`: 通常生成の完成動画。
+- `batches/<一括実行名>/scene_<保存順番号>_<実行ID>/scene.mp4`: 一括生成の完成動画。再開は同じ一括実行フォルダを使い、再試行は別フォルダに保存します。
+
+動画の隣にある`segments/`・`generated_audio/`はカット結合用のMP4・WAV・JSONです。完成動画も含め、指定したプロジェクト内へ直接保存します。
 
 同じ成功実行の二重保存は追加を行いません。生成後に参照ファイルが変更された場合は、その結果の採用保存を拒否します。
 クラウドへはプロジェクトフォルダをアップロードし、「プロジェクト」欄にクラウド側の絶対パス（例：`/workspace/MyScenes`）を入力して「読込」を押します。`scenes.json`と使用素材の`assets/`が必要です。`previews/`は省略でき、省略時は一覧の動画だけ表示しません。進捗を引き継ぐ場合は`batch.json`も移します。モデルと必要なカスタムノード、生成用workflowは別途用意してください。
 
-素材は相対パスで保存します。ComfyUIのoutput外にあるプロジェクトの素材・プレビューは、標準の読み込み経路で扱えるよう`output/h3_scene_director/_external/`へコピーして使用します。`scenes.json`は読み込み時に書き換えず、`batch.json`は指定した元フォルダへ保存します。指定先には書き込み権限が必要です。従来どおり`output/h3_scene_director/`配下へ置いてプロジェクト名で読む方法も使えます。
+素材は相対パスで保存します。ComfyUIのoutput外にあるプロジェクトの参照素材は、標準の読み込み経路で扱えるよう`output/h3_scene_director/_external/`へコピーして使用します。プレビュー・完成動画はプロジェクトから直接表示します。`scenes.json`は読み込み時に書き換えず、`batch.json`は指定した元フォルダへ保存します。指定先には書き込み権限が必要です。従来どおり`output/h3_scene_director/`配下へ置いてプロジェクト名で読む方法も使えます。
 既存Capture用の `scenes.json` は変換しません。Director用プロジェクトとは分離しています。
 Directorの生成経路は `H3 Scene Segment Save` と `H3 Scene Assemble` でMP4・float32 WAV・小さなJSONだけを保存し、safetensorsチェックポイントは作成しません。Context Loopのカット間の映像・音声の状態は実行中のメモリで引き継ぎます。音声の重複部分もWAVへ保存し、従来と同じ音声結合処理を使用します。一括生成のシーン番号指定・未完了シーンからの再開は使えますが、失敗したシーンは先頭カットから再生成します。シーン内の途中カットからのディスク再開・潜在からの再出力には対応しません。
-既存のDirector workflowはComfyUIを終了してから `venv/Scripts/python.exe custom_nodes/ComfyUI-H3-Scene-Batch/remove_director_checkpoints.py <workflow.json>` で更新できます。元JSONを `.checkpoint-backup.json` に保存し、保存・結合ノードと必要な接続だけを変更します。再起動後は更新済みJSONを開いてください。Context Loop本体や過去のチェックポイントは変更・削除しません。生成動画の保存先は引き続き `output/h3_chains/<run>/final/` です。
+既存の完成版Director workflowはComfyUIを終了してから `venv/Scripts/python.exe custom_nodes/ComfyUI-H3-Scene-Batch/remove_director_checkpoints.py <workflow.json> --project-output` で更新できます。元JSONを `.project-output-backup.json` に保存し、保存・結合ノードとプロジェクト情報の接続だけを変更します。再起動後は更新済みJSONを開いてください。Context Loop本体や過去の動画・チェックポイントは変更・削除しません。
 
 ### 生成と設定
 
@@ -77,7 +81,7 @@ Directorの生成経路は `H3 Scene Segment Save` と `H3 Scene Assemble` でMP
 「このシーンを生成」はサブグラフ内・表面に出したseed欄にもComfyUI標準の固定／ランダム／増加／減少と更新タイミングを適用します。カットに直接指定したseedと保存済みシーンのseedは優先されます。
 「Plan JSONを読み込む」でJSONの貼り付け、またはファイル選択ができます。貼り付け後は「貼り付けたJSONを読み込む」を押します。不正なJSONや置き換えのキャンセルでは現在のカットを保持します。未編集の追加フィールドは保持します。直接編集したPlanにカット別stepsがあれば試作で使用し、一括生成では現在のstepsで上書きします。
 通常のComfyUI実行ボタンも利用できます。run_nameは自動で実行ごとに分け、生成設定と参照内容のfingerprintをContext-Loopへ渡します。Loop Startは開始カット1のまま使います。
-完成動画は `output/h3_chains/<自動実行名>/final/`。**H3 Scene Result #1211** が成功結果をDirectorへ戻します。
+完成動画はプロジェクト内の`renders/`または`batches/`。**H3 Scene Result #1211** が成功結果をDirectorへ戻します。
 
 LLMモデル・mmproj・パラメータは移行元の設定です。「LLM設定」モーダルでseed・最大出力トークン・temperatureを変更できます。システムPromptは画像解析・共通ストーリー・R2V Prompt・その他のモードのPromptを個別に確認・編集・保存でき、「標準に戻す」で選択中のPromptだけをリセットします。保存先はworkflow内のLLM設定です。編集後はworkflowも保存してください。システムPromptの未保存の編集はモーダルを閉じると破棄されます。
 Prompt内の変数は実行時のモード・前カット説明の有無・対象カットに合わせて展開され、「送信されるシステムPromptの展開例」で全文を確認できます。画像解析用のシステムPromptを変更すると変更後の設定で再解析し、標準に戻すと既存の標準設定での解析文を再利用できます。ストーリー・Prompt作成用だけの変更では画像を再解析しません。

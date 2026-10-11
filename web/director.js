@@ -9,7 +9,7 @@ const stylesheet = document.createElement("link");
 stylesheet.rel = "stylesheet"; stylesheet.href = new URL("./director.css", import.meta.url).href; document.head.append(stylesheet);
 
 function viewUrl(file) {
-  if (typeof file === "object") return api.apiURL(`/view?${new URLSearchParams(file)}`);
+  if (typeof file === "object") return api.apiURL(`${file.project ? '/h3_scene_director/video' : '/view'}?${new URLSearchParams(file)}`);
   const type = file.endsWith(" [output]") ? "output" : "input";
   const path = file.replaceAll("\\", "/").replace(/ \[(input|output)\]$/, "");
   const split = path.lastIndexOf("/");
@@ -92,7 +92,7 @@ function attachDirector(node) {
     e.value = value; e.onchange = () => { try { collect(); change(e.value); save(); render(); } catch (e) { report(e); } }; return e;
   }
   function changed() { node.graph?.change(); node.setDirtyCanvas(true, true); }
-  function save() { widgets.plan_json.value = JSON.stringify(plan); widgets.scene_json.value = JSON.stringify(scene); changed(); }
+  function save() { scene.output = { project: project.value }; widgets.plan_json.value = JSON.stringify(plan); widgets.scene_json.value = JSON.stringify(scene); changed(); }
   function arrangeAssets() {
     const selected = scene.assets[selectedAsset];
     for (const [kind] of LANES) {
@@ -504,6 +504,7 @@ function attachDirector(node) {
   }
 
   widgets.plan_json.serializeValue = () => { collect(); return JSON.stringify(plan); };
+  widgets.scene_json.serializeValue = () => JSON.stringify({ ...scene, output: { project: project.value } });
   node.addDOMWidget("cut_editor", "custom", root, { serialize: false, hideOnZoom: false, getMinHeight: () => 600, getHeight: () => 900 });
   function restore() {
     try {

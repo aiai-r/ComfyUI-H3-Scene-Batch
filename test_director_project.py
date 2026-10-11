@@ -120,6 +120,9 @@ class DirectorProjectTests(unittest.TestCase):
         self.assertEqual(listing['directory'], str(external))
         self.assertEqual(len(listing['scenes']), 1)
         self.assertEqual(listing['scenes'][0]['video']['type'], 'output')
+        self.assertEqual(listing['scenes'][0]['video']['project'], str(external))
+        self.assertTrue(project.video_file(listing['scenes'][0]['video']).is_relative_to(external))
+        self.assertEqual(list((self.output / 'h3_scene_director/_external').rglob('*.mp4')), [])
         loaded = action('load', id=identity)
         asset = director.reference_path(loaded['scene']['assets'][0]['file'])
         source = external / json.loads(manifest)[0]['scene']['assets'][0]['file']
@@ -131,6 +134,9 @@ class DirectorProjectTests(unittest.TestCase):
         self.assertIsNone(action('list')['scenes'][0]['video'])
         self.assertIsNone(action('load', id=identity)['video'])
         action('start', start_index=1, owner='cloud', result_node='1211')
+        attempt = action('next', owner='cloud')['batch']['attempt']
+        self.assertEqual(attempt['output']['project'], str(external))
+        self.assertRegex(attempt['output']['directory'], r'^batches/[^/]+/scene_0001_')
         self.assertTrue((external / 'batch.json').is_file())
         self.assertEqual((external / 'scenes.json').read_bytes(), manifest)
         items = json.loads(manifest)
@@ -154,7 +160,9 @@ class DirectorProjectTests(unittest.TestCase):
         self.assertEqual(state['ids'], [f'scene{i}' for i in range(12, 41)])
         self.assertEqual(state['positions'], list(range(12, 41)))
         self.assertEqual(state['total'], 40)
+        batch_directory = state['directory']
         attempt = self.action('next', owner='one')['batch']['attempt']
+        self.assertTrue(attempt['output']['directory'].startswith(batch_directory + '/scene_0012_'))
         self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
         state = self.action('status')['batch']
         self.assertEqual(state['completed'][0]['id'], 'scene12')
@@ -167,10 +175,28 @@ class DirectorProjectTests(unittest.TestCase):
         self.assertEqual(len(resumed['completed']), 1)
         retry = self.action('next', owner='two')['batch']['attempt']
         self.assertNotEqual(retry['run_name'], failed['run_name'])
+        self.assertEqual(resumed['directory'], batch_directory)
+        self.assertTrue(retry['output']['directory'].startswith(batch_directory + '/scene_0013_'))
+        self.assertNotEqual(retry['output']['directory'], failed['output']['directory'])
         self.action('stop')
         selected = self.action('start', ids=['scene40', 'scene3'], owner='two', result_node='1211')['batch']
         self.assertEqual(selected['ids'], ['scene3', 'scene40'])
         self.assertEqual(selected['positions'], [3, 40])
+        self.assertNotEqual(selected['directory'], batch_directory)
+
+    def test_video_path_containment_and_relocated_batch_results(self):
+        identity = self.save('first', 'T2V')
+        root = project.project_path('test')
+        video = project.project_preview(root, project.records(root)[0])
+        for values in ({'filename': '../../outside.mp4'}, {'subfolder': '../..'}, {'filename': 'scenes.json', 'subfolder': '.'}):
+            with self.assertRaises(ValueError): project.video_file({**video, **values})
+        project.write_json(root / 'batch.json', {'ids': [identity], 'completed': [{'id': identity, 'video': video}],
+                                               'attempt': None, 'status': 'complete'})
+        relocated = self.root / 'cloud project'
+        shutil.move(str(root), relocated)
+        state = project.refresh_batch(relocated, self.queue)
+        self.assertEqual(state['completed'][0]['video']['project'], str(relocated))
+        self.assertTrue(project.video_file(state['completed'][0]['video']).is_relative_to(relocated))
 
     @unittest.skipUnless(project.os.name == 'nt', 'Windows Explorer')
     def test_open_project_folder(self):
