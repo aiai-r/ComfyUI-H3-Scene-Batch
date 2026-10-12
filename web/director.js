@@ -169,6 +169,10 @@ function attachDirector(node) {
     delete state.instruction; delete state.story; delete state.storyOn;
     return state;
   }
+  function analysisInstruction() {
+    const instructions = writingState().instructions;
+    return instructions[`cut:${plan.shots[cut]?.id ?? cut}`] || instructions.all || "";
+  }
   function renderWriting(parent, selected) {
     const scope = selected === null ? "all" : `cut:${plan.shots[selected].id ?? selected}`;
     const state = writingState();
@@ -176,7 +180,9 @@ function attachDirector(node) {
     const section = element(parent, "div", "cut-writing section");
     element(section, "strong", "", `${label}のLLM作成`);
     const instruction = input(section, `${label}の日本語指示`, state.instructions[scope], true);
+    instruction.placeholder = "画像1：同じ女性の顔・正面・側面をまとめた外見資料。画像2：左上から順に使うストーリーボード。\n動画：女性が…";
     instruction.oninput = () => { state.instructions[scope] = instruction.value; changed(); };
+    element(section, "div", "muted", "各画像の用途と、作りたい動画をまとめて指定できます。未解析の画像だけ解析し、解析済みの用途・定義は固定して使います。変更は画像の☰から再解析してください。");
     const storyPanel = element(section, "details"); element(storyPanel, "summary", "", "ストーリー（任意・編集可能）");
     storyPanel.open = Boolean(state.stories[scope]);
     const story = input(storyPanel, `${label}のストーリー`, state.stories[scope], true); story.rows = 4;
@@ -204,7 +210,7 @@ function attachDirector(node) {
           : `${label}のストーリーを作成しました。ストーリー欄で確認・編集できます。`;
       }));
     }
-    element(section, "div", "muted", "Prompt作成：ストーリーがあれば使用し、空欄なら日本語指示から作成します。");
+    element(section, "div", "muted", "「ストーリー→Prompt」で未解析画像の解析から一括作成。「Prompt作成」はストーリーがあれば使用し、空欄なら日本語指示から作成します。");
   }
   function preview(parent, asset, small = false) {
     if (!asset.file) return element(parent, "span", "symbol", "未選択");
@@ -295,7 +301,7 @@ function attachDirector(node) {
     if (scene.mode !== "T2V") {
       const imageHeader = element(editor, "div", "row spread"); element(imageHeader, "strong", "", "画像（シーン共通）");
       const analyze = button(imageHeader, "画像をまとめて解析", () => llmTask(async () => {
-        await llm.analyze(scene); status.textContent = "画像解析が完了しました。各画像の☰から結果を確認・編集できます。";
+        await llm.analyze(scene, undefined, false, analysisInstruction()); status.textContent = "未解析画像の解析が完了しました。解析済みの定義は保持しています。各画像の☰から確認・編集できます。";
       })); analyze.disabled = !active.some(a => a.kind === "image");
     }
     const media = element(editor, "div", "media-track"); media.hidden = scene.mode === "T2V";
@@ -381,12 +387,13 @@ function attachDirector(node) {
       button(line, "差し替え", () => chooseFiles(asset.kind, asset.slot)); button(line, "削除", () => removeAsset(asset));
       preview(panel, asset);
       if (asset.kind === "image" && active.includes(asset)) {
-        button(line, "この画像を解析", () => llmTask(async () => {
-          await llm.analyze(scene, [asset], true); status.textContent = "この画像の解析が完了しました。結果は編集できます。";
+        button(line, "この画像を再解析", () => llmTask(async () => {
+          await llm.analyze(scene, [asset], true, analysisInstruction()); status.textContent = "現在の日本語指示で、この画像の参照定義を更新しました。";
         }));
         const record = llm.imageRecord(asset);
         const analysis = input(panel, "画像解析結果（確認・編集）", record.text, true); analysis.rows = 4;
         analysis.oninput = () => { record.text = analysis.value; changed(); };
+        element(panel, "div", "muted", "保存した用途・定義を再利用します。以前の解析に三面図などの説明がなければ、日本語指示に用途を書いて再解析してください。Subject番号とPicture番号は現在の画像順に合わせてPromptへ組み込みます。");
       }
       if (asset.kind === "video") {
         const label = element(panel, "label"); const audio = element(label, "input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false; label.append(" 動画の音声も参照する");

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, SYSTEM_PROMPTS } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, includeReferenceDefinitions, SYSTEM_PROMPTS } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -87,12 +87,14 @@ for (const selected of [0, 1]) {
   assert.equal(request.previous_end_state, undefined);
   assert.match(solo.writer.inputs.system_prompt, /self-contained H3 prompt/);
 }
-const analysis = draftGraph(config, scene, plan, "analysis", "Do not send this", "Or this", null);
+const analysis = draftGraph(config, scene, plan, "analysis", "画像1は同一人物の三面図", "Do not send the story", null);
 assert.deepEqual(analysis.writer.inputs.images, ["images", 0]);
-assert.equal(analysis.writer.inputs.cache_image_analysis, true);
-assert.deepEqual(JSON.parse(analysis.writer.inputs.custom_prompt), { task: "Describe the visible contents of the supplied image." });
-assert.match(analysis.writer.inputs.system_prompt, /observations in English without reference numbers/);
-assert.doesNotMatch(analysis.writer.inputs.system_prompt, /Japanese|R2V|I2V|first image|last image/);
+assert.equal(analysis.writer.inputs.cache_image_analysis, false, "Purpose-aware analysis must inspect pixels, not the lower-level generic description cache");
+assert.deepEqual(JSON.parse(analysis.writer.inputs.custom_prompt), { task: "Define the attached image for its intended reference use.", instruction: "画像1は同一人物の三面図", mode: "R2V", target_image: null });
+assert.match(analysis.writer.inputs.system_prompt, /reusable reference definition in English/);
+assert.match(analysis.writer.inputs.system_prompt, /all views depict ONE individual/);
+assert.match(analysis.writer.inputs.system_prompt, /storyboard/);
+assert.doesNotMatch(analysis.writer.inputs.custom_prompt, /Do not send the story/);
 for (const action of ["story", "prompt"]) for (const selected of [null, 1]) {
   const output = draftGraph(config, scene, plan, action, "指示", "Outline", selected, "Observations");
   const request = JSON.parse(output.writer.inputs.custom_prompt);
@@ -102,17 +104,15 @@ for (const action of ["story", "prompt"]) for (const selected of [null, 1]) {
   assert.equal(output.writer.inputs.system_prompt.includes("Return only the selected cut"), selected !== null);
 }
 const bytes = text => new TextEncoder().encode(text).buffer;
-const key = await imageAnalysisKey(config, scene, async path => {
+const key = await imageAnalysisKey(scene, async path => {
   assert.equal(new URL(path, "http://localhost").searchParams.get("filename"), "one.png"); return bytes("first");
 });
-assert.equal(key, await imageAnalysisKey(config, scene, async () => bytes("first")));
-assert.notEqual(key, await imageAnalysisKey(config, scene, async () => bytes("replacement at same path")));
-assert.notEqual(key, await imageAnalysisKey({ ...config, loader: { model: "changed" } }, scene, async () => bytes("first")));
-assert.equal(key, await imageAnalysisKey(config, { ...scene, assets: [{ ...scene.assets[0], note: "Changed role note" }] }, async () => bytes("first")));
+assert.equal(key, await imageAnalysisKey(scene, async () => bytes("first")));
+assert.notEqual(key, await imageAnalysisKey(scene, async () => bytes("replacement at same path")));
+assert.equal(key, await imageAnalysisKey({ ...scene, assets: [{ ...scene.assets[0], note: "Changed role note" }] }, async () => bytes("first")));
 for (const [mode, role] of [["R2V", "reference"], ["I2V", "first"], ["L2V", "last"], ["FL2V", "last"]]) {
-  assert.equal(key, await imageAnalysisKey(config, { mode, assets: [{ kind: "image", role, file: "another-folder/renamed.png", note: "New note" }] }, async () => bytes("first")));
+  assert.equal(key, await imageAnalysisKey({ mode, assets: [{ kind: "image", role, file: "another-folder/renamed.png", note: "New note" }] }, async () => bytes("first")));
 }
-assert.notEqual(key, await imageAnalysisKey({ ...config, prompt: { ...config.prompt, parameters: { temperature: 0.2 } } }, scene, async () => bytes("first")));
 const customConfig = JSON.parse(JSON.stringify({ ...config, system_prompts: {
   analysis: "Custom observations in English.", story: "Custom story. {{output_instructions}}",
   prompt_r2v: "Custom references. {{continuity_instructions}}\n{{output_instructions}}",
@@ -131,15 +131,13 @@ for (const mode of ["R2V", "T2V", "I2V", "L2V", "FL2V"]) {
   if (mode === "L2V") assert.match(output, /only the ending of the final cut/);
 }
 assert.match(draftGraph(customConfig, scene, plan, "prompt", "", "", 1).writer.inputs.system_prompt, /previous_end_state/);
-assert.notEqual(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")));
 delete customConfig.system_prompts.analysis;
-assert.equal(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")), "Writing prompt edits do not invalidate image analysis; resetting analysis reuses the default cache");
+assert.equal(key, await imageAnalysisKey(scene, async () => bytes("first")), "Analysis identity is based only on image bytes");
 customConfig.system_prompts.analysis = SYSTEM_PROMPTS.analysis.text;
-assert.equal(key, await imageAnalysisKey(customConfig, scene, async () => bytes("first")));
 delete customConfig.system_prompts.prompt_r2v;
 assert.equal(draftGraph(customConfig, scene, plan, "prompt", "", "").writer.inputs.system_prompt,
   draftGraph(config, scene, plan, "prompt", "", "").writer.inputs.system_prompt);
-await imageAnalysisKey(config, { mode: "I2V", assets: [{ kind: "image", role: "first", file: "folder\\image.png [output]" }] }, async path => {
+await imageAnalysisKey({ mode: "I2V", assets: [{ kind: "image", role: "first", file: "folder\\image.png [output]" }] }, async path => {
   const query = new URL(path, "http://localhost").searchParams;
   assert.equal(query.get("filename"), "image.png"); assert.equal(query.get("subfolder"), "folder"); assert.equal(query.get("type"), "output");
   return bytes("output");
@@ -179,3 +177,28 @@ assert.throws(() => readDraft('{"shots":[{"prompt":"Intact text.","end_state":"u
 assert.throws(() => readDraft('{"shots":[]}', plan), /カット数/);
 assert.throws(() => applyDraft({ ...plan, prompt_prefix: "Manual edit" }, plan, draft), /変更/);
 console.log("PASS: LLM settings, scoped graph, continuity, script-owned cut selection, JSON recovery, exact prompt preservation and concurrent-edit protection.");
+
+const refs = [
+  { label: '<Picture 1>', text: '<Subject 1> is one woman in <Picture>. All three views depict the same individual. Use the close-up for her face.' },
+  { label: '<Picture 2>', text: '<Subject 1> is the room in <Picture>, including its desk and chair.' },
+  { label: '<Picture 3>', text: '<Subject 1> is one man shown in multiple views in <Picture>. All views depict the same individual.' },
+];
+const definitions = referenceDefinitions(refs);
+assert.match(definitions, /<Subject 1> is one woman in <Picture 1>/);
+assert.match(definitions, /<Subject 2> is the room in <Picture 2>/);
+assert.match(definitions, /<Subject 3> is one man shown in multiple views in <Picture 3>/);
+assert.match(referenceDefinitions([refs[2], refs[0]].map((r,i) => ({...r,label:`<Picture ${i+1}>`}))), /<Subject 1> is one man.*<Picture 1>/);
+const storyboard = '<Picture> is a storyboard: follow panels left to right, then top to bottom.';
+assert.equal(referenceDefinitions([{label:'<Picture 2>',text:storyboard}]), storyboard.replace('<Picture>','<Picture 2>'));
+assert.match(referenceDefinitions([{label:'<Picture 1>',text:'<Subject 1> is Alice in <Picture>. <Subject 2> is Bob in <Picture>. <Subject 1> wears red.'}, refs[1]]), /<Subject 3> is the room/);
+const finalPrompt = includeReferenceDefinitions('A woman sits at the desk.', definitions);
+assert.ok(finalPrompt.startsWith('subject_definitions:\n' + definitions));
+assert.ok(finalPrompt.endsWith('detailed_description:\nA woman sits at the desk.'));
+assert.equal(includeReferenceDefinitions('subject_definitions: WRONG detailed_description: A woman sits at the desk.',definitions), finalPrompt);
+assert.equal(includeReferenceDefinitions('An empty room.', ''), 'An empty room.');
+assert.throws(() => includeReferenceDefinitions('subject_definitions: No video description.',definitions), /参照定義だけ/);
+console.log('Reference definitions: image-order labels, multiview and storyboard preservation, multiple subjects, exact final insertion passed.');
+
+const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[0],label:'<Picture 2>',key:'same image'}]);
+assert.match(duplicate, /<Subject 1> is one woman in <Picture 1> and <Picture 2>/);
+assert.doesNotMatch(duplicate, /<Subject 2>/, 'Identical image inputs do not create another person');

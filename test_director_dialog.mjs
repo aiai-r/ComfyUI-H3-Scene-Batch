@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey } from "./web/director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey } from "./web/director_llm.js";
 
 const calls = [], history = new Map(), bytes = new Map([["one.png", "one"], ["two.png", "two"]]);
 let failed = false, pending;
@@ -19,8 +19,8 @@ const api = { async fetchApi(path, options) {
 } };
 const source = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 let nextSeed = 1000;
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
-  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "includeReferenceDefinitions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
+  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
 const node = { properties: { h3_llm: { loader: { model: "existing" }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }, graph: { change() {} } };
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "one.png" }, { kind: "image", file: "two.png" }] };
 const llm = new LLM(node, () => {});
@@ -30,7 +30,7 @@ assert.ok(calls.every(g => JSON.parse(g.images.inputs.scene_json).assets.length 
 llm.imageRecord(scene.assets[0]).text = "手動の観察結果";
 const reused = await llm.analyze(scene);
 assert.equal(calls.length, 2);
-assert.match(reused, /<Picture 1>\n手動の観察結果/);
+assert.match(reused, /<Picture 1>\.\n手動の観察結果/);
 bytes.set("two.png", "replacement at same filename");
 await llm.analyze(scene);
 assert.equal(calls.length, 3);
@@ -38,7 +38,7 @@ assert.equal(JSON.parse(calls.at(-1).images.inputs.scene_json).assets[0].file, "
 await llm.analyze(scene, [scene.assets[0]], true);
 assert.equal(calls.length, 4);
 const swapped = { ...scene, assets: [...scene.assets].reverse() };
-assert.match(await llm.analyze(swapped), /^<Picture 1>\nObservations 3/);
+assert.match(await llm.analyze(swapped), /^<Subject 1>.*<Picture 1>\.\nObservations 3/);
 assert.equal(calls.length, 4, "Slot order changes labels without reanalyzing images");
 assert.equal(await llm.analyze({ ...scene, mode: "T2V" }), "");
 assert.equal(calls.length, 4);
@@ -48,7 +48,7 @@ const copy = { kind: "image", file: "another-folder/copy.png", role: "first", no
 await llm.matchImage(copy);
 assert.equal(llm.imageRecord(copy), llm.imageRecord(scene.assets[0]), "Same bytes under a new name share the analysis immediately after import");
 for (const [mode, role, label] of [["R2V", "reference", "<Picture 1>"], ["I2V", "first", "first frame"], ["L2V", "last", "<Picture 1>"]]) {
-  assert.equal(await llm.analyze({ mode, assets: [{ ...copy, role }] }), `${label}\nObservations 4`);
+  assert.equal(await llm.analyze({ mode, assets: [{ ...copy, role }] }), mode === "R2V" ? `<Subject 1> is the visible content referenced from ${label}.\nObservations 4` : `${label}\nObservations 4`);
 }
 const paired = { mode: "FL2V", assets: [{ ...copy, role: "first" }, { ...scene.assets[0], role: "last" }] };
 assert.equal(await llm.analyze(paired), "first frame\nObservations 4\n\nlast frame\nObservations 4");
@@ -60,25 +60,25 @@ assert.equal(restored.imageRecord(scene.assets[0]).text, "Edited after reload");
 assert.match(await restored.analyze(paired), /first frame\nEdited after reload/);
 assert.equal(calls.length, 4, "Workflow reload preserves content aliases and edits");
 node.properties.h3_llm.loader.model = "changed";
-await llm.analyze(paired);
-assert.equal(calls.length, 5, "A changed model runs once for duplicate images");
 node.properties.h3_llm.prompt.parameters.temperature = 0.2;
-await llm.analyze(paired);
-assert.equal(calls.length, 6, "Changed analysis settings invalidate reuse");
-node.properties.h3_llm.loader.model = "existing";
-delete node.properties.h3_llm.prompt.parameters.temperature;
+node.properties.h3_llm.system_prompts = { analysis: "Different analysis instructions" };
+await llm.analyze(paired, undefined, false, '用途を変えても保存済みを使う');
+assert.equal(calls.length, 4, "Model, settings, system prompt, usage notes and Japanese instructions do not reanalyze saved images");
 assert.match(await llm.analyze(paired), /Edited after reload/);
-assert.equal(calls.length, 6);
 
 const legacyId = JSON.stringify(["one.png", "reference", ""]);
 const legacyNode = { properties: { h3_llm: structuredClone(node.properties.h3_llm), h3_image_analyses: { [legacyId]: { text: "以前の日本語解析", key: "old-key" } } } };
 const legacy = new LLM(legacyNode, () => {});
 await legacy.analyze({ mode: "R2V", assets: [scene.assets[0]] });
-assert.equal(calls.length, 7, "Old Japanese analysis is replaced with a fresh English analysis once");
-assert.equal(legacyNode.properties.h3_image_analyses[legacyId].text, "以前の日本語解析");
-assert.match(legacy.imageRecord(scene.assets[0]).text, /^Observations/);
-await legacy.analyze({ mode: "I2V", assets: [{ ...scene.assets[0], role: "first" }] });
-assert.equal(calls.length, 7);
+assert.equal(calls.length, 4, "Existing manually edited observations are retained, not silently regenerated");
+assert.equal(legacy.imageRecord(scene.assets[0]).text, "以前の日本語解析");
+const currentKey = await llm.imageKey(scene.assets[0]);
+const oldKey = JSON.stringify({version:2,loader:{model:'old model'},images:JSON.parse(currentKey).images});
+const oldNode = { properties: { h3_llm: structuredClone(node.properties.h3_llm), h3_image_analysis_keys: {'one.png':oldKey}, h3_image_analyses: {[oldKey]:{text:'Existing content-hash analysis',key:oldKey}} } };
+const migrated = new LLM(oldNode, () => {});
+await migrated.analyze({mode:'R2V',assets:[scene.assets[0]]});
+assert.equal(calls.length,4);
+assert.equal(migrated.imageRecord(scene.assets[0]).text,'Existing content-hash analysis');
 
 failed = true;
 const record = structuredClone(llm.imageRecord(scene.assets[0]));
@@ -93,13 +93,13 @@ await assert.rejects(running, /中止/);
 assert.deepEqual(llm.imageRecord(scene.assets[0]), record);
 assert.equal(llm.promptId, null);
 llm.cancelled = false;
-for (const change of [() => bytes.set("one.png", "changed during inference"), () => { node.properties.h3_llm.loader.model = "changed during inference"; }]) {
+for (const change of [() => bytes.set("one.png", "changed during inference")]) {
   pending = {};
   const running = llm.analyze(scene, [scene.assets[0]], true);
   while (!pending.resolve) await new Promise(resolve => setImmediate(resolve));
   const previous = { ...llm.imageRecord(scene.assets[0]) };
   change(); pending.resolve(); pending = null;
-  await assert.rejects(running, /処理中に画像またはLLM設定が変わりました/);
+  await assert.rejects(running, /処理中に画像が変わりました/);
   assert.deepEqual(llm.imageRecord(scene.assets[0]), previous, "Changed inputs must not receive mismatched analysis");
 }
 console.log("Director LLM: content reuse across modes/names, persistence, edits, settings, legacy analysis, replacement, T2V, failure, cancellation and input races passed.");
@@ -129,7 +129,8 @@ const failedSeed = generated.at(-1).writer.inputs.seed;
 reply = '{"shots":[{""prompt":"Recovered complete prompt."}]}';
 const repaired = await llm.create(plan, scene, 0, state, 'prompt', () => {});
 assert.notEqual(generated.at(-1).writer.inputs.seed, failedSeed, 'Retry must bypass the cached malformed reply');
-assert.equal(repaired[0].prompt, 'Recovered complete prompt.');
+assert.ok(repaired[0].prompt.endsWith('Recovered complete prompt.'));
+assert.ok(repaired[0].prompt.startsWith('subject_definitions:'));
 await llm.create(plan, scene, 0, state, 'all', () => {});
 assert.notEqual(generated.at(-1).writer.inputs.seed, generated.at(-2).writer.inputs.seed);
 assert.equal(calls.length, analysisCalls, 'Repeated writing must reuse image analyses');
@@ -137,3 +138,52 @@ assert.deepEqual(node.properties.h3_llm, originalConfig, 'Transient LLM seeds mu
 assert.deepEqual(node.properties.h3_image_analyses, originalAnalyses);
 assert.deepEqual(plan, originalPlan, 'Video seeds and existing prompts remain unchanged');
 console.log('Director LLM regeneration: fresh writing seeds, malformed-reply retry, JSON repair, image reuse and unchanged video seeds passed.');
+
+const fresh = { mode:'R2V',assets:[{kind:'image',file:'new-person.png',slot:0},{kind:'image',file:'new-board.png',slot:2}] };
+bytes.set('new-person.png','new-person'); bytes.set('new-board.png','new-board');
+const purposeNode = {properties:{h3_llm:structuredClone(node.properties.h3_llm)}};
+const purpose = new LLM(purposeNode,()=>{});
+const steps = [];
+purpose.execute = async graph => {
+  const request = JSON.parse(graph.writer.inputs.custom_prompt);
+  steps.push({request,graph});
+  if(graph.images) {
+    assert.equal(graph.writer.inputs.cache_image_analysis,false);
+    return request.target_image.image_number === 1
+      ? '<Subject 1> is the woman in <Picture>. The three panels depict the SAME individual. Use the close-up for her face; one woman appears in the video.'
+      : '<Picture> is a storyboard. Follow its three panels left to right; use them for shot order, not simultaneous people.';
+  }
+  return graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'A woman follows the storyboard.' : '{"shots":[{"prompt":"<Subject 1> follows the shot order in <Picture 2>."}]}';
+};
+const purposeState = {...state,instruction:'画像1は同じ女性の三面図。画像3は左から読む絵コンテ。女性が歩く。'};
+const purposeResult = await purpose.create(plan,fresh,0,purposeState,'all',()=>{});
+assert.equal(steps.length,4,'One click runs missing-image analysis, story, then prompt');
+assert.equal(steps[0].request.instruction,purposeState.instruction);
+assert.equal(steps[1].request.target_image.image_number,3,'Japanese image number follows the visible slot, even across empty slots');
+assert.equal(steps[1].request.target_image.label,'<Picture 2>','H3 picture label follows active input order');
+assert.match(purposeResult[0].prompt,/three panels depict the SAME individual/);
+assert.match(purposeResult[0].prompt,/<Picture 2> is a storyboard/);
+assert.ok(steps[2].request.image_analysis.includes('three panels depict the SAME individual'));
+const frozen = structuredClone(purposeNode.properties.h3_image_analyses);
+await purpose.create(plan,fresh,0,{...purposeState,instruction:'女性が座って話す。画像の用途を変更。'},'all',()=>{});
+assert.equal(steps.length,6,'Changing motion, dialogue or usage in Japanese does not rerun saved analysis');
+assert.deepEqual(purposeNode.properties.h3_image_analyses,frozen);
+await purpose.analyze(fresh,[fresh.assets[1]],true,purposeState.instruction);
+assert.equal(steps.length,7,'Explicit reanalysis touches only the selected image');
+const savedSteps=steps.length;
+bytes.set('new-person.png','replacement-person');
+await purpose.analyze(fresh,undefined,false,purposeState.instruction);
+assert.equal(steps.length,savedSteps+1,'Same-path replacement reruns only that image');
+assert.match(purpose.imageRecord(fresh.assets[1]).text,/storyboard/);
+console.log('Purpose-aware workflow: Japanese usage reaches pixels, definitions survive writing, cache stays fixed, replacement and explicit reanalysis passed.');
+
+for (const [mode,role] of [['I2V','first'],['L2V','last'],['FL2V','first']]) {
+  const boundaryScene={mode,assets:[{...fresh.assets[0],role}]};
+  const boundaryCalls=[];
+  purpose.execute=async graph=>{boundaryCalls.push(graph);return '{"shots":[{"prompt":"The woman moves from the supplied frame."}]}';};
+  const result=await purpose.create(plan,boundaryScene,0,purposeState,'prompt',()=>{});
+  assert.equal(boundaryCalls.length,1,'Saved boundary images are not reanalyzed');
+  assert.equal(result[0].prompt,'The woman moves from the supplied frame.');
+  assert.doesNotMatch(JSON.parse(boundaryCalls[0].writer.inputs.custom_prompt).image_analysis,/<Subject/);
+}
+console.log('Boundary modes reuse saved observations without R2V subject sections.');

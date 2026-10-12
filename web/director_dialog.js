@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
 
 export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
@@ -11,7 +11,7 @@ export class DirectorLLM {
   }
 
   async imageKey(asset) {
-    return imageAnalysisKey(this.node.properties.h3_llm, { mode: "R2V", assets: [{ kind: "image", file: asset.file }] }, async path => {
+    return imageAnalysisKey({ mode: "R2V", assets: [{ kind: "image", file: asset.file }] }, async path => {
       const response = await api.fetchApi(path, { cache: "no-store" });
       if (!response.ok) throw new Error("参照画像を読み込めません。素材を確認してください。");
       return response.arrayBuffer();
@@ -20,6 +20,20 @@ export class DirectorLLM {
 
   async matchImage(asset) {
     const key = await this.imageKey(asset);
+    const previous = this.imageRecord(asset);
+    const previousKey = this.node.properties.h3_image_analysis_keys?.[asset.file];
+    const records = this.node.properties.h3_image_analyses;
+    if (!records[key]) {
+      for (const [oldKey, record] of [[previousKey, previous], ...Object.entries(records)]) {
+        let parsed;
+        try { parsed = JSON.parse(oldKey); }
+        catch (error) { if (error instanceof SyntaxError) continue; throw error; }
+        if (record.text.trim() && (JSON.stringify({ images: parsed?.images }) === key || !previousKey && Array.isArray(parsed) && record === previous)) {
+          records[key] = record;
+          break;
+        }
+      }
+    }
     (this.node.properties.h3_image_analysis_keys ??= {})[asset.file] = key;
     const record = this.imageRecord(asset); record.key = key;
     this.node.graph?.change();
@@ -65,26 +79,33 @@ export class DirectorLLM {
     }
   }
 
-  async analyze(scene, assets = sceneAssets(scene).filter(a => a.kind === "image"), force = false) {
+  async analyze(scene, assets = sceneAssets(scene).filter(a => a.kind === "image"), force = false, instruction = "") {
     const config = this.node.properties.h3_llm;
     if (!config) throw new Error("LLM設定がありません。開発workflowを開いてください。");
     for (const asset of assets) {
       if (this.cancelled) throw new Error("LLM処理を中止しました。");
-      const single = { mode: "R2V", assets: [{ kind: "image", file: asset.file }] };
+      const single = { mode: scene.mode, assets: [asset] };
       const record = await this.matchImage(asset), current = record.key;
       if (!force && record.text.trim()) continue;
-      const graph = draftGraph(config, single, { shots: [] }, "analysis", "", "");
+      const reference = referenceDescriptions(scene).find(r => r.kind === "image" && scene.assets[r.asset_index] === asset);
+      const target = { image_number: (asset.slot ?? scene.assets.filter(a => a.kind === "image").indexOf(asset)) + 1,
+        label: reference.label, role: asset.role ?? "reference", note: asset.note ?? "" };
+      const graph = draftGraph(config, single, { shots: [] }, "analysis", instruction, "", null, "", "", true, target);
+      if (force) graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       const text = await this.execute(graph, `画像解析中：${asset.file}`);
-      if (current !== await this.imageKey(asset)) throw new Error("処理中に画像またはLLM設定が変わりました。解析を再実行してください。");
+      if (current !== await this.imageKey(asset)) throw new Error("処理中に画像が変わりました。解析を再実行してください。");
       if (this.cancelled) throw new Error("LLM処理を中止しました。");
+      if (!text.trim()) throw new Error("画像の参照定義が空です。再解析してください。");
       record.text = text; record.key = current; this.node.graph?.change();
     }
-    return referenceDescriptions(scene).filter(r => r.kind === "image")
-      .map(r => `${r.label}\n${this.imageRecord(scene.assets[r.asset_index]).text}`).join("\n\n");
+    const references = referenceDescriptions(scene).filter(r => r.kind === "image")
+      .map(r => ({ label: r.label, ...this.imageRecord(scene.assets[r.asset_index]) }));
+    return scene.mode === "R2V" ? referenceDefinitions(references)
+      : references.map(r => `${r.label}\n${r.text.replace(/<Subject\s+\d+>/g, "The referenced subject").replace(/<Picture(?:\s+\d+)?>/g, r.label)}`).join("\n\n");
   }
 
   async create(plan, scene, selected, state, action, onStory) {
-    const analysis = await this.analyze(scene);
+    const analysis = await this.analyze(scene, undefined, false, state.instruction);
     const config = this.node.properties.h3_llm;
     let story = state.story;
     const graph = stage => {
@@ -99,7 +120,9 @@ export class DirectorLLM {
     }
     if (action === "story") return null;
     const text = await this.execute(graph("prompt"), "Prompt作成中…");
-    return readDraft(text, plan, selected);
+    const drafts = readDraft(text, plan, selected);
+    if (scene.mode === "R2V") for (const draft of drafts) draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
+    return drafts;
   }
 }
 
