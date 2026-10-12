@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { getEventListeners } from "node:events";
 let extension;
 let prompt;
 globalThis.sceneModeTestApi = new EventTarget();
@@ -15,6 +16,10 @@ const source = readFileSync(new URL("web/mode.js", import.meta.url), "utf8")
   .replace('import { api } from "../../scripts/api.js";', "const api = globalThis.sceneModeTestApi;")
   .replace('"./generation.js"', JSON.stringify(generationUrl));
 const { batchPrompt } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const originalGraphToPrompt = app.graphToPrompt;
+extension.setup();
+assert.equal(app.graphToPrompt, originalGraphToPrompt, 'Startup without Capture must not wrap execution');
+assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 0);
 function capture() {
   return {
     id: 830, type: "H3SceneCapture", mode: 0, outputs: [], properties: {},
@@ -259,3 +264,45 @@ reloaded.widgets[1].callback();
 assert.equal(reloaded.widgets.filter((w) => w.name === "生成モード").length, 1);
 assert.throws(() => scenePrompt({}, "I2V"), /H3生成の構成/);
 console.log("PASS: new Capture, graph attachment, four-mode prompt routing, reload, current callbacks and project path retention.");
+
+for (const nodes of [[{ type: 'H3SceneDirector' }], []]) {
+  extension.beforeConfigureGraph();
+  app.graph = { _nodes: nodes };
+  extension.afterConfigureGraph();
+  assert.equal(app.graphToPrompt, originalGraphToPrompt, 'Director and ordinary workflows have no Capture execution wrapper');
+  assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 0);
+  prompt = { output: { '817:931': { class_type: 'UnrelatedNode', inputs: {} } }, workflow: { nodes } };
+  assert.deepEqual(await app.graphToPrompt(), prompt, 'Capture must not rewrite non-Capture graphs even when legacy IDs match');
+  app.graph = { get _nodes() { throw new Error('Unexpected Capture graph scan'); } };
+  assert.deepEqual(await app.graphToPrompt(), prompt);
+  globalThis.sceneModeTestApi.dispatchEvent(new CustomEvent('executed', { detail: { node: '224', output: { text: ['Unrelated'] } } }));
+  app.graph = { _nodes: [control] };
+  extension.afterConfigureGraph();
+  const installed = app.graphToPrompt;
+  assert.notEqual(installed, originalGraphToPrompt);
+  assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 1);
+  extension.afterConfigureGraph();
+  assert.equal(app.graphToPrompt, installed, 'Repeated lifecycle callbacks must not stack wrappers');
+  assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 1);
+}
+extension.beforeConfigureGraph();
+const addedCapture = new Node(); addedCapture.onNodeCreated();
+app.graph = { _nodes: [addedCapture], getNodeById() {}, setDirtyCanvas() {} };
+addedCapture.graph = app.graph;
+addedCapture.onAdded();
+await new Promise(resolve => setImmediate(resolve));
+assert.notEqual(app.graphToPrompt, originalGraphToPrompt, 'Adding Capture activates its execution support');
+app.graph._nodes = []; addedCapture.graph = null; addedCapture.onRemoved();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(app.graphToPrompt, originalGraphToPrompt, 'Deleting the last Capture removes its hooks');
+assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 0);
+app.graph = { _nodes: [control] }; extension.afterConfigureGraph();
+const captureWrapper = app.graphToPrompt;
+const externalWrapper = function () { return captureWrapper.apply(this, arguments); };
+app.graphToPrompt = externalWrapper;
+extension.beforeConfigureGraph();
+app.graph = { get _nodes() { throw new Error('Removed Capture hook still scans'); } };
+assert.equal(app.graphToPrompt, externalWrapper, 'Removing Capture hooks must preserve later wrappers from other extensions');
+assert.deepEqual(await app.graphToPrompt(), prompt);
+assert.equal(getEventListeners(globalThis.sceneModeTestApi, 'executed').length, 0);
+console.log('PASS: no Capture hooks on Director/startup, workflow switching, node add/remove, duplicate prevention and other-extension preservation.');

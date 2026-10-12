@@ -110,67 +110,94 @@ function restoreCapture(control) {
   control.setDirtyCanvas(true, true);
 }
 
+let removeCaptureHooks = null;
+
+function clearCaptureHooks() {
+  removeCaptureHooks?.();
+  removeCaptureHooks = null;
+}
+
+function configureCaptureHooks() {
+  const graph = app.rootGraph ?? app.graph;
+  if (!graph?._nodes.some(node => node.type === "H3SceneCapture")) {
+    clearCaptureHooks();
+    return;
+  }
+  if (removeCaptureHooks) return;
+  let active = true;
+  const original = app.graphToPrompt;
+  const graphToPrompt = async function () {
+    if (!active) return original.apply(this, arguments);
+    for (const node of app.graph?._nodes ?? []) {
+      if (node.type === "H3SceneCapture" && node.mode === 0) applyBypass(node);
+    }
+    const result = await original.apply(this, arguments);
+    if (!active) return result;
+    const controls = (app.graph?._nodes ?? []).filter((node) => node.type === "H3SceneCapture" && node.mode === 0 && widget(node, "execution_mode")?.value === "バッチ生成");
+    if (controls.length > 1) throw new Error("バッチ生成にするCaptureは1つにしてください。");
+    if (controls.length === 1) {
+      const control = controls[0];
+      let saved = null;
+      if (control.properties.h3_multimode) {
+        const project = widget(control, "project_dir").value.replace(/[\\/]+$/, "");
+        const response = await api.fetchApi("/h3_scene_batch/scene_config", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manifest_path: project + "/scenes.json", start_at: widget(control, "start_at").value }),
+        });
+        saved = await response.json();
+        if (!response.ok) throw new Error(saved.error);
+      }
+      result.output = batchPrompt(result.output, control, saved);
+    } else {
+      const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.mode === 0 && node.properties.h3_multimode);
+      if (control?.properties.h3_cuts) {
+        const mode = control.properties.h3_multimode.mode;
+        const count = control.properties.h3_cuts.count;
+        const graph = structuredClone(result.output);
+        cutLLMs(graph, mode, count);
+        const only = promptCut(widget(control, "実行内容")?.value);
+        if (only) {
+          control.h3PromptRuns = promptRuns(graph, mode, [only]);
+        } else {
+          generationPrompt(graph, mode);
+          applyCuts(graph, count, mode);
+          control.h3PromptRuns = promptRuns(graph, mode, [1, 2, 3, 4].filter((cut) => cut <= count));
+          useSavedPrompts(graph, count, control.properties.h3_cuts.prompts);
+        }
+        result.output = graph;
+      } else if (control) {
+        result.output = scenePrompt(result.output, control.properties.h3_multimode.mode);
+      } else if (hasCuts(result.output)) {
+        applyCuts(result.output, 1, "R2V");
+      }
+    }
+    return result;
+  };
+  // Remember each cut's generated prompt so later runs reuse it.
+  const executed = ({ detail }) => {
+    const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.properties.h3_cuts);
+    const id = String(detail.display_node ?? detail.node);
+    const run = control?.h3PromptRuns?.[id];
+    const text = detail.output?.text?.[0];
+    if (!run || typeof text !== "string") return;
+    (control.properties.h3_cuts.prompts ??= {})[run.cut] = { mode: run.mode, instruction: run.instruction, prompt: text };
+    delete control.h3PromptRuns[id];
+    applyBypass(control);
+  };
+  app.graphToPrompt = graphToPrompt;
+  api.addEventListener("executed", executed);
+  removeCaptureHooks = () => {
+    active = false;
+    if (app.graphToPrompt === graphToPrompt) app.graphToPrompt = original;
+    api.removeEventListener("executed", executed);
+  };
+}
+
 app.registerExtension({
   name: "h3_scene_batch.mode",
-  setup() {
-    const original = app.graphToPrompt;
-    app.graphToPrompt = async function () {
-      for (const node of app.graph?._nodes ?? []) {
-        if (node.type === "H3SceneCapture" && node.mode === 0) applyBypass(node);
-      }
-      const result = await original.apply(this, arguments);
-      const controls = (app.graph?._nodes ?? []).filter((node) => node.type === "H3SceneCapture" && node.mode === 0 && widget(node, "execution_mode")?.value === "バッチ生成");
-      if (controls.length > 1) throw new Error("バッチ生成にするCaptureは1つにしてください。");
-      if (controls.length === 1) {
-        const control = controls[0];
-        let saved = null;
-        if (control.properties.h3_multimode) {
-          const project = widget(control, "project_dir").value.replace(/[\\/]+$/, "");
-          const response = await api.fetchApi("/h3_scene_batch/scene_config", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ manifest_path: project + "/scenes.json", start_at: widget(control, "start_at").value }),
-          });
-          saved = await response.json();
-          if (!response.ok) throw new Error(saved.error);
-        }
-        result.output = batchPrompt(result.output, control, saved);
-      } else {
-        const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.mode === 0 && node.properties.h3_multimode);
-        if (control?.properties.h3_cuts) {
-          const mode = control.properties.h3_multimode.mode;
-          const count = control.properties.h3_cuts.count;
-          const graph = structuredClone(result.output);
-          cutLLMs(graph, mode, count);
-          const only = promptCut(widget(control, "実行内容")?.value);
-          if (only) {
-            control.h3PromptRuns = promptRuns(graph, mode, [only]);
-          } else {
-            generationPrompt(graph, mode);
-            applyCuts(graph, count, mode);
-            control.h3PromptRuns = promptRuns(graph, mode, [1, 2, 3, 4].filter((cut) => cut <= count));
-            useSavedPrompts(graph, count, control.properties.h3_cuts.prompts);
-          }
-          result.output = graph;
-        } else if (control) {
-          result.output = scenePrompt(result.output, control.properties.h3_multimode.mode);
-        } else if (hasCuts(result.output)) {
-          applyCuts(result.output, 1, "R2V");
-        }
-      }
-      return result;
-    };
-    // Remember each cut's generated prompt so later runs reuse it.
-    api.addEventListener("executed", ({ detail }) => {
-      const control = app.graph?._nodes.find((node) => node.type === "H3SceneCapture" && node.properties.h3_cuts);
-      const id = String(detail.display_node ?? detail.node);
-      const run = control?.h3PromptRuns?.[id];
-      const text = detail.output?.text?.[0];
-      if (!run || typeof text !== "string") return;
-      (control.properties.h3_cuts.prompts ??= {})[run.cut] = { mode: run.mode, instruction: run.instruction, prompt: text };
-      delete control.h3PromptRuns[id];
-      applyBypass(control);
-    });
-  },
+  setup: configureCaptureHooks,
+  beforeConfigureGraph: clearCaptureHooks,
+  afterConfigureGraph: configureCaptureHooks,
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "H3SceneCapture") return;
     const created = nodeType.prototype.onNodeCreated;
@@ -184,8 +211,17 @@ app.registerExtension({
     nodeType.prototype.onAdded = function () {
       const result = added?.apply(this, arguments);
       queueMicrotask(() => {
-        if (this.graph) configureGeneration(this, app);
+        if (this.graph) {
+          configureGeneration(this, app);
+          configureCaptureHooks();
+        }
       });
+      return result;
+    };
+    const removed = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+      const result = removed?.apply(this, arguments);
+      queueMicrotask(configureCaptureHooks);
       return result;
     };
     const configured = nodeType.prototype.onConfigure;
