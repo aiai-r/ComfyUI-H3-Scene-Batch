@@ -339,17 +339,17 @@ const flGroup = [...root.querySelectorAll('.section')].find(e => e.querySelector
 const [policy, lora] = flGroup.querySelectorAll('select');
 assert.equal(policy.value, 'saved');
 policy.value = 'override'; policy.onchange();
-assert.deepEqual(node.properties.h3_batch_turbo.FL2V, { lora_name: 'minimaxh3/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', strength: 1, steps: 8 });
+assert.deepEqual(node.properties.h3_batch_turbo.FL2V, { lora_name: 'minimaxh3/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors' });
 assert.equal(node.properties.h3_batch_turbo.R2V, undefined);
-const strengthInput = flGroup.querySelector('input'); strengthInput.value = '0.8'; strengthInput.onchange();
-assert.equal(node.properties.h3_batch_turbo.FL2V.strength, 0.8);
+assert.equal(flGroup.querySelector('input'), null, 'Turbo selection must not expose steps or strength controls');
+assert.deepEqual([...policy.options].map(option => option.textContent), ['保存したTurbo LoRAを使用', 'Turbo LoRAを変更']);
 await byText('更新').onclick(); await byText('バッチLoRA設定').onclick();
-assert.equal(node.properties.h3_batch_turbo.FL2V.strength, 0.8);
+assert.deepEqual(node.properties.h3_batch_turbo.FL2V, { lora_name: lora.value });
 const restoredGroup = [...root.querySelectorAll('.section')].find(e => e.querySelector('strong')?.textContent === 'T2V・I2V・L2V・FL2V用');
 const restoredPolicy = restoredGroup.querySelector('select');
 restoredPolicy.value = 'saved'; restoredPolicy.onchange();
 assert.equal(node.properties.h3_batch_turbo.FL2V, undefined);
-console.log('Director batch LoRA UI: family selection, 8-step default, strength persistence and saved-settings reset passed.');
+console.log('Director batch LoRA UI: file selection only, exact labels, persistence and saved-settings reset passed.');
 
 window.HTMLElement.prototype.showModal = function () { this.setAttribute('open', ''); };
 window.HTMLElement.prototype.close = function () { this.dispatchEvent(new window.Event('close')); };

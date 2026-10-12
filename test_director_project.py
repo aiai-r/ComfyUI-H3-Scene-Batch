@@ -122,7 +122,7 @@ class DirectorProjectTests(unittest.TestCase):
         self.action('start', ids=[identity], owner='first', result_node='1211', turbo=turbo)
         self.action('stop')
         resumed = self.action('resume', owner='second', turbo={})['batch']
-        self.assertEqual(resumed['turbo'], turbo)
+        self.assertEqual(resumed['turbo'], {'FL2V': {'lora_name': 'fl8.safetensors'}})
 
     def test_identical_assets_are_shared_across_names_modes_and_legacy_paths(self):
         first = self.save('first')

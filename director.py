@@ -92,11 +92,11 @@ class H3SceneTurboLora:
 
     def load(self, model, scene):
         turbo = scene["execution"]["turbo"]
-        if not turbo["lora_name"] or turbo["strength"] == 0:
+        if not turbo["lora_name"]:
             return (model,)
         graph = GraphBuilder()
         loader = graph.node("LoraLoaderModelOnly", model=model,
-                            lora_name=resolve_lora(turbo["lora_name"]), strength_model=turbo["strength"])
+                            lora_name=resolve_lora(turbo["lora_name"]), strength_model=1.0)
         return {"result": (loader.out(0),), "expand": graph.finalize()}
 
 
@@ -150,19 +150,13 @@ class H3SceneDirector:
         batch_lora = scene.pop("batch_lora", None)
         turbo = None
         if any(n["class_type"] == "H3SceneTurboLora" for n in (prompt or {}).values()):
-            turbo = copy.deepcopy(batch_lora) if batch_lora is not None else {
-                "lora_name": TURBO_LORAS["R2V" if scene["mode"] == "R2V" else "FL2V"], "strength": 1.0}
+            turbo = {"lora_name": batch_lora["lora_name"] if batch_lora is not None else
+                     TURBO_LORAS["R2V" if scene["mode"] == "R2V" else "FL2V"], "strength": 1.0}
             if turbo["lora_name"]:
                 turbo["lora_name"] = resolve_lora(turbo["lora_name"])
-            steps = int(turbo.pop("default_steps", steps))
-            if "steps" in turbo:
-                steps = int(turbo.pop("steps"))
-                for shot in prepared["shots"]:
-                    shot["steps"] = steps
         if use_current_settings:
             for shot in prepared["shots"]:
-                if batch_lora is None or "steps" in batch_lora:
-                    shot['steps'] = steps
+                shot['steps'] = steps
                 shot.pop('resolution', None)
         scene['assets'] = active_assets(scene)
         hashes = {str(i): file_digest(reference_path(a["file"])) for i, a in enumerate(scene.get("assets", [])) if a.get("file")}

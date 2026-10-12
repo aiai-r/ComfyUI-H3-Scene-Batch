@@ -43,19 +43,21 @@ class DirectorLoraTests(unittest.TestCase):
             self.assertEqual(loader['class_type'], 'LoraLoaderModelOnly')
             self.assertEqual(loader['inputs']['lora_name'], execution['turbo']['lora_name'])
 
-    def test_saved_steps_preserved_and_override_replaces_all_cuts(self):
+    def test_settings_steps_win_and_turbo_strength_is_fixed(self):
         saved = {'lora_name': self.names[1], 'strength': 1, 'default_steps': 4}
         execution = self.build('FL2V', saved, steps=20)['execution']
-        self.assertEqual(execution['steps'], 4)
-        self.assertEqual([s['steps'] for s in execution['plan']['shots']], [4, 6])
+        self.assertEqual(execution['steps'], 20)
+        self.assertEqual([s['steps'] for s in execution['plan']['shots']], [20, 20])
         override = {'lora_name': 'minimaxh3\\fl8.safetensors', 'strength': 0.8, 'steps': 8}
         scene = self.build('FL2V', override, steps=20)
         self.assertNotIn('batch_lora', scene)
-        self.assertEqual(scene['execution']['steps'], 8)
-        self.assertEqual([s['steps'] for s in scene['execution']['plan']['shots']], [8, 8])
-        self.assertEqual(scene['execution']['turbo'], {'lora_name': self.names[2], 'strength': 0.8})
-        changed = self.build('FL2V', {**override, 'strength': 0.9})
-        self.assertNotEqual(scene['execution']['generation_fingerprint'], changed['execution']['generation_fingerprint'])
+        self.assertEqual(scene['execution']['steps'], 20)
+        self.assertEqual([s['steps'] for s in scene['execution']['plan']['shots']], [20, 20])
+        self.assertEqual(scene['execution']['turbo'], {'lora_name': self.names[2], 'strength': 1})
+        changed = self.build('FL2V', {**override, 'strength': 0.9, 'steps': 4}, steps=20)
+        self.assertEqual(scene['execution']['generation_fingerprint'], changed['execution']['generation_fingerprint'])
+        loader, = H3SceneTurboLora().load('model', scene)['expand'].values()
+        self.assertEqual(loader['inputs']['strength_model'], 1)
         model = object()
         self.assertEqual(H3SceneTurboLora().load(model, self.build('FL2V', {**override, 'lora_name': ''})), (model,))
 

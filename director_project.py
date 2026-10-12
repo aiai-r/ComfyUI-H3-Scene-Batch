@@ -294,7 +294,7 @@ def project_action(data, queue):
                     raise ValueError("生成する保存シーンを選択してください。")
                 ids = [identity for identity in all_ids if identity in ids]
                 state = {'ids': ids, 'completed': [], 'result_node': str(data['result_node']), 'attempt': None,
-                         'turbo': data.get('turbo', {}),
+                         'turbo': {family: {'lora_name': preset['lora_name']} for family, preset in data.get('turbo', {}).items()},
                          'positions': [all_ids.index(identity) + 1 for identity in ids], 'total': len(all_ids),
                          'directory': 'batches/' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid4().hex[:8]}
             elif not state or len(state['completed']) == len(state['ids']):

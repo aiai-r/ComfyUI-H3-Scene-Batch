@@ -466,7 +466,7 @@ function attachDirector(node) {
 
   async function refreshLibrary() {
     const data = await projectRequest(project.value, "list"); const batch = data.batch;
-    library.replaceChildren(); element(library, "p", "muted", "Prompt・素材・seed・LoRA・stepsは保存設定を使用します。turboとstepsはバッチLoRA設定で系統別に変更できます。モデル・サンプラー・解像度は現在のworkflow設定です。");
+    library.replaceChildren(); element(library, "p", "muted", "Prompt・素材・seed・追加LoRAは保存設定を使用します。Turbo LoRAは系統別に変更できます。stepsはH3 Scene Settingsの共通設定を使います。モデル・サンプラー・解像度も現在のworkflow設定です。");
     element(library, "p", "muted", "LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使用します。再開時はバッチ開始時のturbo設定を引き継ぎます。");
     const loraSettings = element(library, "div", "section");
     button(loraSettings, "バッチLoRA設定", async () => {
@@ -479,7 +479,7 @@ function attachDirector(node) {
       for (const [family, title] of [["R2V", "R2V用"], ["FL2V", "T2V・I2V・L2V・FL2V用"]]) {
         const group = element(loraSettings, "div", "section"); element(group, "strong", "", title);
         const choice = element(group, "select"); choice.style.maxWidth = "100%";
-        for (const [value, text] of [["saved", "保存したturbo・stepsを使用"], ["override", "turbo・stepsを変更"]]) {
+        for (const [value, text] of [["saved", "保存したTurbo LoRAを使用"], ["override", "Turbo LoRAを変更"]]) {
           const option = element(choice, "option", "", text); option.value = value;
         }
         choice.value = config[family] ? "override" : "saved";
@@ -491,20 +491,13 @@ function attachDirector(node) {
         file.value = config[family]?.lora_name ?? names.find(n => n.endsWith(family === "R2V"
           ? "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors"
           : "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors")) ?? "";
-        const strength = input(fields, "turbo強度", config[family]?.strength ?? 1); strength.type = "number"; strength.step = "0.05";
-        const steps = input(fields, "steps", config[family]?.steps ?? (family === "R2V" ? 4 : 8)); steps.type = "number"; steps.min = "1"; steps.step = "1";
         const update = () => {
           fields.hidden = choice.value === "saved";
           if (fields.hidden) delete config[family];
-          else {
-            if (!Number.isInteger(Number(steps.value)) || Number(steps.value) < 1 || !Number.isFinite(Number(strength.value))) {
-              report(new Error("stepsは1以上の整数、強度は数値で指定してください。")); return;
-            }
-            config[family] = { lora_name: file.value, strength: Number(strength.value), steps: Number(steps.value) };
-          }
+          else config[family] = { lora_name: file.value };
           changed();
         };
-        for (const control of [choice, file, strength, steps]) control.onchange = update;
+        for (const control of [choice, file]) control.onchange = update;
       }
     });
     const actions = element(library, "div", "row");

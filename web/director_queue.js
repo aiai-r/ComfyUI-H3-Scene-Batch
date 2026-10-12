@@ -58,8 +58,8 @@ export function sceneRequest(template, directorId, record, attempt, currentSetti
     if ((override || saved?.turbo) && !Object.values(value.output).some(n => n.class_type === "H3SceneTurboLora")) {
       throw new Error("H3 Scene Turbo LoRAが接続された開発workflowを使用してください。");
     }
-    if (override) scene.batch_lora = { ...override };
-    else if (saved?.turbo) scene.batch_lora = { ...saved.turbo, default_steps: saved.steps };
+    const turbo = override ?? saved?.turbo;
+    if (turbo) scene.batch_lora = { lora_name: turbo.lora_name };
   }
   Object.assign(inputs, { plan_json: JSON.stringify(record.plan), scene_json: JSON.stringify(scene), run_name: attempt.run_name, use_current_settings: currentSettings });
   node.widgets_values = [inputs.run_name, inputs.plan_json, inputs.scene_json, currentSettings];

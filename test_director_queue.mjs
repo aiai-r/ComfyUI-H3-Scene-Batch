@@ -115,13 +115,14 @@ const savedRecord = { ...structuredClone(record), execution: { steps: 4, turbo: 
   } }] } };
 const loraBefore = structuredClone(loraTemplate), recordBefore = structuredClone(savedRecord);
 const defaults = sceneRequest(loraTemplate, 1200, savedRecord, { run_name: 'saved' }, true, {});
-assert.deepEqual(JSON.parse(defaults.output[1200].inputs.scene_json).batch_lora, { ...savedRecord.execution.turbo, default_steps: 4 });
+assert.deepEqual(JSON.parse(defaults.output[1200].inputs.scene_json).batch_lora, { lora_name: savedRecord.execution.turbo.lora_name });
 assert.deepEqual(defaults.output.extra.inputs, { model: ['turbo', 0], clip: ['clip', 0], ...savedRecord.execution.additional_loras[0].inputs });
 const overrides = { R2V: { lora_name: 'ref4.safetensors', strength: 1, steps: 4 }, FL2V: { lora_name: 'fl8.safetensors', strength: 0.8, steps: 8 } };
 for (const mode of ['R2V', 'T2V', 'I2V', 'L2V', 'FL2V']) {
   const batchRecord = { ...savedRecord, scene: { ...savedRecord.scene, mode } };
   const request = sceneRequest(loraTemplate, 1200, batchRecord, { run_name: mode }, true, overrides);
-  assert.deepEqual(JSON.parse(request.output[1200].inputs.scene_json).batch_lora, overrides[mode === 'R2V' ? 'R2V' : 'FL2V']);
+  assert.deepEqual(JSON.parse(request.output[1200].inputs.scene_json).batch_lora, { lora_name: overrides[mode === 'R2V' ? 'R2V' : 'FL2V'].lora_name });
+  assert.deepEqual(request.output.steps, loraTemplate.output.steps);
   assert.deepEqual(request.output.extra.inputs, defaults.output.extra.inputs);
   assert.deepEqual(request.output.model, loraTemplate.output.model);
 }
