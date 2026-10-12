@@ -109,6 +109,21 @@ class DirectorProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '変更'): self.action('adopt', prompt_id='good', node_id='1211')
         self.assertEqual(self.action('list')['scenes'], [])
 
+    def test_lora_snapshot_roundtrip_and_batch_resume_keeps_overrides(self):
+        self.success('loras', 'T2V')
+        execution = self.queue.history['loras']['outputs']['1211']['h3_scene_result'][0]['scene']['execution']
+        execution.update(turbo={'lora_name': 'fl4.safetensors', 'strength': 1}, additional_loras=[
+            {'id': 'extra', 'class_type': 'Power Lora Loader (rgthree)', 'inputs': {
+                'lora_1': {'on': True, 'lora': 'character.safetensors', 'strength': 0.6, 'strengthTwo': 0.2}}}])
+        identity = self.action('adopt', prompt_id='loras', node_id='1211')['id']
+        loaded = self.action('load', id=identity)
+        self.assertEqual(loaded['execution'], execution)
+        turbo = {'FL2V': {'lora_name': 'fl8.safetensors', 'strength': 1, 'steps': 8}}
+        self.action('start', ids=[identity], owner='first', result_node='1211', turbo=turbo)
+        self.action('stop')
+        resumed = self.action('resume', owner='second', turbo={})['batch']
+        self.assertEqual(resumed['turbo'], turbo)
+
     def test_identical_assets_are_shared_across_names_modes_and_legacy_paths(self):
         first = self.save('first')
         root = project.project_path('test')

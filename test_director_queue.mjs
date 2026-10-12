@@ -22,7 +22,7 @@ const reactive = value => new Proxy(value, { get(target, key) {
 const app = { graphToPrompt: async () => reactive(template), rootGraph: { _nodes: [{ widgets: [{
   beforeQueued: () => phases.push("before"), afterQueued: () => phases.push("after"),
 }] }] } };
-const { sceneRequest, resultNode, DirectorQueue, batchProgress } = new Function("app", "api", "applyPromotedWidgetControl", "setTimeout", source + "\nreturn {sceneRequest,resultNode,DirectorQueue,batchProgress};")(app, api, () => {}, callback => callback());
+const { sceneRequest, resultNode, DirectorQueue, batchProgress, normalizeLoraPaths, submitScene } = new Function("app", "api", "applyPromotedWidgetControl", "setTimeout", source + "\nreturn {sceneRequest,resultNode,DirectorQueue,batchProgress,normalizeLoraPaths,submitScene};")(app, api, () => {}, callback => callback());
 const record = { plan: { shots: [{ prompt: "Garden", seed: "18446744073709551615", duration_seconds: 15 }, { prompt: "Pond", seed: "0", duration_seconds: 15 }] }, scene: { mode: "T2V", assets: [] } };
 const before = structuredClone(template);
 assert.throws(() => structuredClone(reactive(template)), { name: "DataCloneError" });
@@ -103,3 +103,48 @@ assert.equal(submissions.length, 4);
 assert.equal(state.status, 'complete');
 assert.match(batchProgress({ ids: ['old'], completed: [], status: 'stopped' }), /停止位置：シーン 1\/1/);
 console.log('Director batch: start index, current settings, project position, load failure persistence and resume passed.');
+
+const loraTemplate = structuredClone(template);
+loraTemplate.output.turbo = { class_type: 'H3SceneTurboLora', inputs: { model: ['model', 0], scene: ['1200', 2] } };
+loraTemplate.output.extra = { class_type: 'Power Lora Loader (rgthree)', inputs: { model: ['turbo', 0], clip: ['clip', 0],
+  lora_1: { on: true, lora: 'unrelated.safetensors', strength: 2 }, lora_2: { on: true, lora: 'another.safetensors', strength: 1 } } };
+const savedRecord = { ...structuredClone(record), execution: { steps: 4, turbo: { lora_name: 'minimaxh3\\fl4.safetensors', strength: 1 },
+  additional_loras: [{ id: 'extra', class_type: 'Power Lora Loader (rgthree)', inputs: {
+    lora_1: { on: true, lora: 'characters\\person.safetensors', strength: 0.7, strengthTwo: 0.3 },
+    lora_2: { on: false, lora: 'disabled.safetensors', strength: 0.5 },
+  } }] } };
+const loraBefore = structuredClone(loraTemplate), recordBefore = structuredClone(savedRecord);
+const defaults = sceneRequest(loraTemplate, 1200, savedRecord, { run_name: 'saved' }, true, {});
+assert.deepEqual(JSON.parse(defaults.output[1200].inputs.scene_json).batch_lora, { ...savedRecord.execution.turbo, default_steps: 4 });
+assert.deepEqual(defaults.output.extra.inputs, { model: ['turbo', 0], clip: ['clip', 0], ...savedRecord.execution.additional_loras[0].inputs });
+const overrides = { R2V: { lora_name: 'ref4.safetensors', strength: 1, steps: 4 }, FL2V: { lora_name: 'fl8.safetensors', strength: 0.8, steps: 8 } };
+for (const mode of ['R2V', 'T2V', 'I2V', 'L2V', 'FL2V']) {
+  const batchRecord = { ...savedRecord, scene: { ...savedRecord.scene, mode } };
+  const request = sceneRequest(loraTemplate, 1200, batchRecord, { run_name: mode }, true, overrides);
+  assert.deepEqual(JSON.parse(request.output[1200].inputs.scene_json).batch_lora, overrides[mode === 'R2V' ? 'R2V' : 'FL2V']);
+  assert.deepEqual(request.output.extra.inputs, defaults.output.extra.inputs);
+  assert.deepEqual(request.output.model, loraTemplate.output.model);
+}
+const creating = sceneRequest(loraTemplate, 1200, savedRecord, { run_name: 'trial' }, false);
+assert.equal(JSON.parse(creating.output[1200].inputs.scene_json).batch_lora, undefined);
+assert.deepEqual(creating.output.extra, loraTemplate.output.extra);
+const empty = sceneRequest(loraTemplate, 1200, { ...savedRecord, execution: { ...savedRecord.execution, additional_loras: [] } }, { run_name: 'empty' }, true, {});
+assert.deepEqual(empty.output.extra.inputs, { model: ['turbo', 0], clip: ['clip', 0] });
+const remapped = structuredClone(savedRecord); remapped.execution.additional_loras[0].id = 'other-id';
+assert.deepEqual(sceneRequest(loraTemplate, 1200, remapped, { run_name: 'remap' }, true, {}).output.extra, defaults.output.extra);
+assert.throws(() => sceneRequest(template, 1200, savedRecord, { run_name: 'missing' }, true, {}), /復元/);
+normalizeLoraPaths(defaults.output, ['cloud/person.safetensors']);
+assert.equal(defaults.output.extra.inputs.lora_1.lora, 'cloud/person.safetensors');
+assert.equal(defaults.output.extra.inputs.lora_2.lora, 'disabled.safetensors');
+assert.throws(() => normalizeLoraPaths(defaults.output, []), /LoRAが見つからない/);
+assert.throws(() => normalizeLoraPaths(defaults.output, ['a/person.safetensors', 'b/person.safetensors']), /同名/);
+assert.deepEqual(loraTemplate, loraBefore);
+assert.deepEqual(savedRecord, recordBefore);
+let postCount = 0;
+api.fetchApi = async path => {
+  if (path === '/prompt') postCount++;
+  return { ok: true, json: async () => ({ LoraLoaderModelOnly: { input: { required: { lora_name: [[]] } } } }) };
+};
+await assert.rejects(submitScene(defaults, 'missing-lora'), error => error.rejected && /LoRA/.test(error.message));
+assert.equal(postCount, 0, 'Missing additional LoRA must fail before queue submission');
+console.log('Director LoRA: mixed-mode override, saved strengths, disabled entries, empty stacks, cloud paths and missing-file rejection passed.');

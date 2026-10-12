@@ -17,12 +17,50 @@ export function batchProgress(batch) {
   return `${label}：シーン ${position}/${total} · 今回 ${done}/${count} シーン完了${batch.error ? ` · ${batch.error}` : ""}`;
 }
 
-export function sceneRequest(template, directorId, record, attempt, currentSettings) {
+const loraLoaders = new Set(["Power Lora Loader (rgthree)", "LoraLoader", "LoraLoaderModelOnly"]);
+
+export function restoreLoras(output, saved) {
+  const loaders = Object.entries(output).filter(([, n]) => loraLoaders.has(n.class_type));
+  const used = new Set();
+  for (const entry of saved) {
+    let target = loaders.find(([id, n]) => id === entry.id && n.class_type === entry.class_type && !used.has(id));
+    if (!target) {
+      const matches = loaders.filter(([id, n]) => n.class_type === entry.class_type && !used.has(id));
+      if (matches.length === 1) target = matches[0];
+    }
+    if (!target) throw new Error("保存した追加LoRAの接続を復元できません。保存時と同じLoRAノード構成を使用してください。");
+    const [id, node] = target; used.add(id);
+    const connections = Object.fromEntries(Object.entries(node.inputs).filter(([key]) => ["model", "clip"].includes(key)));
+    node.inputs = { ...connections, ...JSON.parse(JSON.stringify(entry.inputs)) };
+  }
+  for (const [id, node] of loaders) {
+    if (used.has(id)) continue;
+    if (node.class_type === "Power Lora Loader (rgthree)") {
+      node.inputs = Object.fromEntries(Object.entries(node.inputs).filter(([key]) => ["model", "clip"].includes(key)));
+    } else {
+      node.inputs.strength_model = 0;
+      if ("strength_clip" in node.inputs) node.inputs.strength_clip = 0;
+    }
+  }
+}
+
+export function sceneRequest(template, directorId, record, attempt, currentSettings, batchTurbo = null) {
   const value = JSON.parse(JSON.stringify(template));
   const inputs = value.output[String(directorId)]?.inputs;
   if (!inputs) throw new Error("Directorが実行グラフにありません。");
   const node = value.workflow.nodes.find(n => String(n.id) === String(directorId));
   const scene = { ...record.scene, output: attempt.output ?? { project: record.scene.output?.project ?? node.properties?.h3_project ?? "MyScenes" } };
+  delete scene.batch_lora;
+  if (batchTurbo !== null) {
+    const saved = record.execution;
+    if (saved?.additional_loras) restoreLoras(value.output, saved.additional_loras);
+    const override = batchTurbo[scene.mode === "R2V" ? "R2V" : "FL2V"];
+    if ((override || saved?.turbo) && !Object.values(value.output).some(n => n.class_type === "H3SceneTurboLora")) {
+      throw new Error("H3 Scene Turbo LoRAが接続された開発workflowを使用してください。");
+    }
+    if (override) scene.batch_lora = { ...override };
+    else if (saved?.turbo) scene.batch_lora = { ...saved.turbo, default_steps: saved.steps };
+  }
   Object.assign(inputs, { plan_json: JSON.stringify(record.plan), scene_json: JSON.stringify(scene), run_name: attempt.run_name, use_current_settings: currentSettings });
   node.widgets_values = [inputs.run_name, inputs.plan_json, inputs.scene_json, currentSettings];
   if (node.widgets_values_named) Object.assign(node.widgets_values_named, { run_name: inputs.run_name, plan_json: inputs.plan_json, scene_json: inputs.scene_json, use_current_settings: currentSettings });
@@ -30,6 +68,14 @@ export function sceneRequest(template, directorId, record, attempt, currentSetti
 }
 
 export async function submitScene(value, promptId) {
+  if (Object.values(value.output).some(n => n.class_type === "H3SceneTurboLora")) {
+    try {
+      const response = await api.fetchApi("/object_info/LoraLoaderModelOnly");
+      if (!response.ok) throw new Error("LoRA一覧を取得できませんでした。");
+      const names = (await response.json()).LoraLoaderModelOnly.input.required.lora_name[0];
+      normalizeLoraPaths(value.output, names);
+    } catch (error) { error.rejected = true; throw error; }
+  }
   const response = await api.fetchApi("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt_id: promptId, prompt: value.output, client_id: api.clientId, extra_data: { extra_pnginfo: { workflow: value.workflow } } }) });
   const result = await response.json();
@@ -38,6 +84,26 @@ export async function submitScene(value, promptId) {
     error.rejected = true; throw error;
   }
   return result.prompt_id;
+}
+
+export function normalizeLoraPaths(output, names) {
+  const normalized = name => name.replaceAll("\\", "/");
+  const resolve = name => {
+    const exact = names.filter(n => normalized(n) === normalized(name));
+    const matches = exact.length ? exact : names.filter(n => normalized(n).split("/").at(-1) === normalized(name).split("/").at(-1));
+    if (matches.length !== 1) throw new Error(`LoRAが見つからないか、同名ファイルが複数あります：${name}`);
+    return matches[0];
+  };
+  for (const node of Object.values(output)) {
+    if (node.class_type === "Power Lora Loader (rgthree)") {
+      for (const [key, item] of Object.entries(node.inputs)) {
+        if (key.toLowerCase().startsWith("lora_") && item.on && (item.strength !== 0 || (item.strengthTwo ?? item.strength) !== 0)) item.lora = resolve(item.lora);
+      }
+    } else if (["LoraLoader", "LoraLoaderModelOnly"].includes(node.class_type)) {
+      if (typeof node.inputs.lora_name !== "string") throw new Error("保存LoRAの復元にはLoRA名をノードで直接指定してください。");
+      node.inputs.lora_name = resolve(node.inputs.lora_name);
+    }
+  }
 }
 
 export function resultNode(template, directorId) {
@@ -111,6 +177,7 @@ export class DirectorQueue {
       const template = await app.graphToPrompt();
       const output = resultNode(template, this.node.id);
       let { batch } = await projectRequest(project, resume ? "resume" : "start", { ids, owner: this.owner, result_node: output,
+        turbo: this.node.properties.h3_batch_turbo ?? {},
         ...(startIndex !== null ? { start_index: startIndex } : {}) });
       while (!this.stopped && !["complete", "error", "stopped"].includes(batch.status)) {
         this.notify(batchProgress(batch));
@@ -122,7 +189,7 @@ export class DirectorQueue {
           try {
             const record = await projectRequest(project, "load", { id: batch.ids[batch.completed.length] });
             if (this.stopped) break;
-            const value = sceneRequest(template, this.node.id, record, batch.attempt, true);
+            const value = sceneRequest(template, this.node.id, record, batch.attempt, true, batch.turbo ?? {});
             submitting = true;
             await submitScene(value, batch.attempt.prompt_id);
           }

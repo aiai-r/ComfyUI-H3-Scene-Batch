@@ -1,4 +1,5 @@
 import json
+import copy
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -54,6 +55,51 @@ def generation_settings(prompt):
             if node["class_type"] not in ("H3SceneDirector", "H3SceneResult", "PreviewAny")}
 
 
+TURBO_LORAS = {
+    "R2V": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+    "FL2V": "minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
+}
+LORA_LOADERS = {"Power Lora Loader (rgthree)", "LoraLoader", "LoraLoaderModelOnly"}
+
+
+def resolve_lora(name):
+    normalized = str(name).replace("\\", "/")
+    available = folder_paths.get_filename_list("loras")
+    exact = [item for item in available if item.replace("\\", "/") == normalized]
+    matches = exact or [item for item in available if item.replace("\\", "/").split("/")[-1] == normalized.split("/")[-1]]
+    if len(matches) != 1:
+        raise ValueError(f"LoRAが見つからないか、同名ファイルが複数あります: {name}")
+    folder_paths.get_full_path_or_raise("loras", matches[0])
+    return matches[0]
+
+
+def additional_loras(prompt):
+    return [{"id": key, "class_type": node["class_type"],
+             "inputs": copy.deepcopy({k: v for k, v in node["inputs"].items() if k not in ("model", "clip")})}
+            for key, node in (prompt or {}).items() if node["class_type"] in LORA_LOADERS]
+
+
+class H3SceneTurboLora:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"model": ("MODEL",), "scene": ("H3_SCENE",)}}
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "load"
+    CATEGORY = "H3 Scene Batch"
+
+    DESCRIPTION = "Selects the scene's turbo LoRA: REF2V 4-step for R2V, FL2V 4-step for other modes, or the batch override."
+
+    def load(self, model, scene):
+        turbo = scene["execution"]["turbo"]
+        if not turbo["lora_name"] or turbo["strength"] == 0:
+            return (model,)
+        graph = GraphBuilder()
+        loader = graph.node("LoraLoaderModelOnly", model=model,
+                            lora_name=resolve_lora(turbo["lora_name"]), strength_model=turbo["strength"])
+        return {"result": (loader.out(0),), "expand": graph.finalize()}
+
+
 def generation_signature(prompt, scene, prepared):
     graph = {key: {"class_type": value["class_type"], "inputs": value["inputs"]}
              for key, value in (prompt or {}).items() if value["class_type"] not in ("H3SceneDirector", "H3SceneResult", "PreviewAny")}
@@ -100,18 +146,33 @@ class H3SceneDirector:
     def build(self, run_name, plan_json, width, height, steps, base_seed, scene_json='{"mode":"R2V","assets":[],"ref_image_size":"match"}', use_current_settings=False, prompt=None):
         run_name = "director_" + uuid4().hex[:16] if run_name == "auto" else run_name
         prepared = json.loads(prepare_plan(plan_json, base_seed))
+        scene = json.loads(scene_json)
+        batch_lora = scene.pop("batch_lora", None)
+        turbo = None
+        if any(n["class_type"] == "H3SceneTurboLora" for n in (prompt or {}).values()):
+            turbo = copy.deepcopy(batch_lora) if batch_lora is not None else {
+                "lora_name": TURBO_LORAS["R2V" if scene["mode"] == "R2V" else "FL2V"], "strength": 1.0}
+            if turbo["lora_name"]:
+                turbo["lora_name"] = resolve_lora(turbo["lora_name"])
+            steps = int(turbo.pop("default_steps", steps))
+            if "steps" in turbo:
+                steps = int(turbo.pop("steps"))
+                for shot in prepared["shots"]:
+                    shot["steps"] = steps
         if use_current_settings:
             for shot in prepared["shots"]:
-                shot['steps'] = steps
+                if batch_lora is None or "steps" in batch_lora:
+                    shot['steps'] = steps
                 shot.pop('resolution', None)
-        scene = json.loads(scene_json)
         scene['assets'] = active_assets(scene)
         hashes = {str(i): file_digest(reference_path(a["file"])) for i, a in enumerate(scene.get("assets", [])) if a.get("file")}
-        fingerprint = generation_signature(prompt, {**scene, "asset_hashes": hashes}, prepared)
+        fingerprint = generation_signature(prompt, {**scene, "asset_hashes": hashes, "turbo": turbo}, prepared)
         snapshot = {**prepared, "shots": [{**shot, "seed": str(shot["seed"])} for shot in prepared["shots"]]}
         scene["execution"] = {"run_name": run_name, "plan": snapshot, "asset_hashes": hashes,
                               "generation_fingerprint": fingerprint, "settings": generation_settings(prompt),
                               "width": width, "height": height, "steps": steps}
+        if turbo is not None:
+            scene["execution"].update(turbo=turbo, additional_loras=additional_loras(prompt))
         graph = GraphBuilder()
         profile = graph.node("MiniMaxH3GenerationProfile",
                              scene_continuity="Hard picture + smooth audio", audio_profile="Generate audio")

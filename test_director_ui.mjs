@@ -30,6 +30,10 @@ let promptOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
   async fetchApi(path, request) {
+    if (path === '/object_info/LoraLoaderModelOnly') return { ok: true, json: async () => ({ LoraLoaderModelOnly: { input: { required: { lora_name: [[
+      'minimaxh3/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors',
+      'minimaxh3/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors',
+    ]] } } } }) };
     if (path.startsWith('/view?')) return { ok: true, arrayBuffer: async () => uploadedBytes.get(new URL(path, 'http://localhost').searchParams.get('filename')) ?? new TextEncoder().encode(path).buffer };
     if (path.startsWith('/history/')) { const id = path.split('/').pop(); return { ok: true, json: async () => ({ [id]: history.get(id) }) }; }
     if (path === '/prompt') {
@@ -328,6 +332,24 @@ assert.equal(field('カット 1 のPrompt').value, plan.shots[0].prompt);
 assert.equal(node.widgets.find(w => w.name === 'use_current_settings').value, true);
 assert.equal(root.querySelector('.result-video'), null, 'A project without previews still loads for editing/generation');
 console.log('Director project UI: absolute path, numbered scenes, start position, missing previews and persisted failure position passed.');
+
+await byText('保存済み・一括生成').onclick();
+await byText('バッチLoRA設定').onclick(); assertHealthy();
+const flGroup = [...root.querySelectorAll('.section')].find(e => e.querySelector('strong')?.textContent === 'T2V・I2V・L2V・FL2V用');
+const [policy, lora] = flGroup.querySelectorAll('select');
+assert.equal(policy.value, 'saved');
+policy.value = 'override'; policy.onchange();
+assert.deepEqual(node.properties.h3_batch_turbo.FL2V, { lora_name: 'minimaxh3/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors', strength: 1, steps: 8 });
+assert.equal(node.properties.h3_batch_turbo.R2V, undefined);
+const strengthInput = flGroup.querySelector('input'); strengthInput.value = '0.8'; strengthInput.onchange();
+assert.equal(node.properties.h3_batch_turbo.FL2V.strength, 0.8);
+await byText('更新').onclick(); await byText('バッチLoRA設定').onclick();
+assert.equal(node.properties.h3_batch_turbo.FL2V.strength, 0.8);
+const restoredGroup = [...root.querySelectorAll('.section')].find(e => e.querySelector('strong')?.textContent === 'T2V・I2V・L2V・FL2V用');
+const restoredPolicy = restoredGroup.querySelector('select');
+restoredPolicy.value = 'saved'; restoredPolicy.onchange();
+assert.equal(node.properties.h3_batch_turbo.FL2V, undefined);
+console.log('Director batch LoRA UI: family selection, 8-step default, strength persistence and saved-settings reset passed.');
 
 window.HTMLElement.prototype.showModal = function () { this.setAttribute('open', ''); };
 window.HTMLElement.prototype.close = function () { this.dispatchEvent(new window.Event('close')); };
