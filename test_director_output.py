@@ -129,7 +129,9 @@ class DirectorOutputTests(unittest.TestCase):
             'start': {'class_type': 'MiniMaxH3ChainLoopStart', 'inputs': {'plan': ['director', 0], 'start_clip': 1}},
             'director': {'class_type': 'H3SceneDirector', 'inputs': {}},
             'current': {'class_type': 'MiniMaxH3ChainCurrent', 'inputs': {'state': ['start', 1]}},
-            'sampler': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['current', 5]}},
+            'references': {'class_type': 'H3ScenePrepareReferences', 'inputs': {'scene': ['director', 2], 'plan': ['director', 0]}},
+            'conditioning': {'class_type': 'H3SceneConditioning', 'inputs': {'prompt': ['current', 4], 'references': ['references', 0]}},
+            'sampler': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['current', 5], 'positive': ['conditioning', 0]}},
             'decode': {'class_type': 'VAEDecode', 'inputs': {'samples': ['sampler', 0]}},
             'save': {'class_type': 'H3SceneSegmentSave', 'inputs': {'state': ['current', 0], 'images': ['decode', 0], 'scene': ['director', 2]}},
             'end': {'class_type': 'H3SceneLoopEnd', 'inputs': {'flow': ['start', 0], 'state': ['current', 0],
@@ -148,7 +150,9 @@ class DirectorOutputTests(unittest.TestCase):
             expanded = output.H3SceneLoopEnd().end([start_id, 0], state, torch.ones(1, 2, 2, 3),
                 latent, {'index': index}, dynamic, end_id)
             self.assertEqual(sorted(n['class_type'] for n in expanded['expand'].values()),
-                             sorted(graph[key]['class_type'] for key in ('start', 'current', 'sampler', 'decode', 'save', 'end')))
+                             sorted(graph[key]['class_type'] for key in ('start', 'current', 'conditioning', 'sampler', 'decode', 'save', 'end')))
+            conditioning, = [n for n in expanded['expand'].values() if n['class_type'] == 'H3SceneConditioning']
+            self.assertEqual(conditioning['inputs']['references'], ['references', 0])
             for key, node in expanded['expand'].items():
                 dynamic.add_ephemeral_node(key, node, end_id, node['override_display_id'])
             end_id = expanded['result'][0][0]

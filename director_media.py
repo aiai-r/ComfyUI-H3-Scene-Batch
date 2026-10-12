@@ -3,7 +3,9 @@ from pathlib import Path
 
 import folder_paths
 import nodes
+import node_helpers
 from comfy_execution.graph_utils import GraphBuilder
+from comfy_extras import nodes_minimax_h3 as h3
 from .director import reference_path, active_assets
 
 
@@ -46,15 +48,22 @@ class H3SceneConditioning:
             "width": ("INT", {"forceInput": True}), "height": ("INT", {"forceInput": True}),
             "length": ("INT", {"forceInput": True}),
             "clip_index": ("INT", {"forceInput": True}), "clip_count": ("INT", {"forceInput": True}),
-        }, "optional": {"audio_vae": ("VAE",)}}
+        }, "optional": {"audio_vae": ("VAE",), "references": ("H3_SCENE_REFERENCES",)}}
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "latent")
     FUNCTION = "build"
     CATEGORY = "H3 Scene Batch"
 
-    def build(self, scene, clip, vae, prompt, width, height, length, clip_index, clip_count, audio_vae=None):
+    def build(self, scene, clip, vae, prompt, width, height, length, clip_index, clip_count, audio_vae=None, references=None):
         scene = read_scene(json.dumps(scene))
+        if scene["mode"] == "R2V" and references is not None:
+            items, blocks = references[(width, height, h3.temporal_shape(length)[0])]
+            tokens = clip.tokenize(prompt, minimax_ref_items=items)
+            positive = clip.encode_from_tokens_scheduled(tokens)
+            if blocks:
+                positive = node_helpers.conditioning_set_values(positive, {"minimax_refs": blocks})
+            return positive, h3._empty_av_latent(width, height, length)[0]
         graph = GraphBuilder()
         inputs = dict(clip=clip, vae=vae, prompt=prompt, width=width, height=height, length=length)
         counts = {"image": 0, "audio": 0, "video": 0}

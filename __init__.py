@@ -1,6 +1,7 @@
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .director import H3SceneDirector, H3SceneTurboLora
 from .director_media import H3SceneConditioning, H3SceneReferenceImages
+from .director_references import H3ScenePrepareReferences, H3SceneEncodeReferences
 from .director_project import H3SceneResult
 from .director_output import H3SceneSegmentSave, H3SceneAssemble, H3SceneLoopEnd
 
@@ -10,6 +11,8 @@ NODE_CLASS_MAPPINGS["H3SceneTurboLora"] = H3SceneTurboLora
 NODE_DISPLAY_NAME_MAPPINGS["H3SceneTurboLora"] = "H3 Scene Turbo LoRA"
 NODE_CLASS_MAPPINGS.update(H3SceneConditioning=H3SceneConditioning, H3SceneReferenceImages=H3SceneReferenceImages)
 NODE_DISPLAY_NAME_MAPPINGS.update(H3SceneConditioning="H3 Scene Conditioning", H3SceneReferenceImages="H3 Scene Reference Images")
+NODE_CLASS_MAPPINGS.update(H3ScenePrepareReferences=H3ScenePrepareReferences, H3SceneEncodeReferences=H3SceneEncodeReferences)
+NODE_DISPLAY_NAME_MAPPINGS.update(H3ScenePrepareReferences="H3 Scene Prepare References", H3SceneEncodeReferences="H3 Scene Encode References")
 NODE_CLASS_MAPPINGS["H3SceneResult"] = H3SceneResult
 NODE_DISPLAY_NAME_MAPPINGS["H3SceneResult"] = "H3 Scene Result"
 NODE_CLASS_MAPPINGS.update(H3SceneSegmentSave=H3SceneSegmentSave, H3SceneAssemble=H3SceneAssemble)
