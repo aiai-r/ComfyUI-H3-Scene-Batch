@@ -18,8 +18,9 @@ const api = { async fetchApi(path, options) {
   return { ok: true, json: async () => ({}) };
 } };
 const source = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", source + "\nreturn DirectorLLM;")(
-  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey);
+let nextSeed = 1000;
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
+  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
 const node = { properties: { h3_llm: { loader: { model: "existing" }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }, graph: { change() {} } };
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "one.png" }, { kind: "image", file: "two.png" }] };
 const llm = new LLM(node, () => {});
@@ -102,3 +103,37 @@ for (const change of [() => bytes.set("one.png", "changed during inference"), ()
   assert.deepEqual(llm.imageRecord(scene.assets[0]), previous, "Changed inputs must not receive mismatched analysis");
 }
 console.log("Director LLM: content reuse across modes/names, persistence, edits, settings, legacy analysis, replacement, T2V, failure, cancellation and input races passed.");
+
+await llm.analyze(scene);
+const analysisCalls = calls.length;
+const originalConfig = structuredClone(node.properties.h3_llm);
+const originalAnalyses = structuredClone(node.properties.h3_image_analyses);
+const plan = { shots: [{ id: 'cut1', prompt: 'Original', seed: '18446744073709551615', duration_seconds: 5 }] };
+const originalPlan = structuredClone(plan);
+const state = { story: 'Walk through a garden.', instruction: 'Keep walking.', includePrevious: false };
+const generated = [];
+let reply = '{"shots":[{"prompt":"Walk slowly."}]}';
+llm.execute = async graph => { generated.push(graph); return reply; };
+for (const action of ['story', 'story', 'prompt', 'prompt']) {
+  await llm.create(plan, scene, 0, state, action, () => {});
+}
+assert.equal(new Set(generated.map(g => g.writer.inputs.seed)).size, 4);
+for (const [first, second] of [[0, 1], [2, 3]]) {
+  const before = structuredClone(generated[first]), after = structuredClone(generated[second]);
+  delete before.writer.inputs.seed; delete after.writer.inputs.seed;
+  assert.deepEqual(before, after, 'Only the LLM seed changes on repeated creation');
+}
+reply = '{"shots":[{"prompt":"incomplete';
+await assert.rejects(llm.create(plan, scene, 0, state, 'prompt', () => {}), /Prompt|返答/);
+const failedSeed = generated.at(-1).writer.inputs.seed;
+reply = '{"shots":[{""prompt":"Recovered complete prompt."}]}';
+const repaired = await llm.create(plan, scene, 0, state, 'prompt', () => {});
+assert.notEqual(generated.at(-1).writer.inputs.seed, failedSeed, 'Retry must bypass the cached malformed reply');
+assert.equal(repaired[0].prompt, 'Recovered complete prompt.');
+await llm.create(plan, scene, 0, state, 'all', () => {});
+assert.notEqual(generated.at(-1).writer.inputs.seed, generated.at(-2).writer.inputs.seed);
+assert.equal(calls.length, analysisCalls, 'Repeated writing must reuse image analyses');
+assert.deepEqual(node.properties.h3_llm, originalConfig, 'Transient LLM seeds must not invalidate analysis settings');
+assert.deepEqual(node.properties.h3_image_analyses, originalAnalyses);
+assert.deepEqual(plan, originalPlan, 'Video seeds and existing prompts remain unchanged');
+console.log('Director LLM regeneration: fresh writing seeds, malformed-reply retry, JSON repair, image reuse and unchanged video seeds passed.');

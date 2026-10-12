@@ -87,8 +87,12 @@ export class DirectorLLM {
     const analysis = await this.analyze(scene);
     const config = this.node.properties.h3_llm;
     let story = state.story;
-    const graph = stage => draftGraph(config, scene, plan, stage, state.instruction, story, selected, analysis,
-      state.includePrevious ? state.sceneStory : "", state.includePrevious);
+    const graph = stage => {
+      const value = draftGraph(config, scene, plan, stage, state.instruction, story, selected, analysis,
+        state.includePrevious ? state.sceneStory : "", state.includePrevious);
+      value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
+      return value;
+    };
     if (action === "story" || action === "all") {
       story = await this.execute(graph("story"), "ストーリー作成中…");
       onStory(story);
@@ -108,8 +112,9 @@ export function openLLMSettings(node) {
   const model = document.createElement("p"); model.textContent = config.loader.model; dialog.append(model);
   for (const [stage, name] of [["story", "ストーリー"], ["prompt", "Prompt・画像解析の整理"]]) {
     for (const [key, label] of [["seed", "seed"], ["max_tokens", "最大出力トークン"], ["temperature", "temperature"]]) {
+      if (key === "seed" && stage === "story") continue;
       const owner = key === "seed" ? config[stage].inputs : config[stage].parameters;
-      const row = document.createElement("label"); row.style.cssText = "display:block;margin:10px 0"; row.textContent = `${name} ${label} `;
+      const row = document.createElement("label"); row.style.cssText = "display:block;margin:10px 0"; row.textContent = key === "seed" ? "画像解析 seed " : `${name} ${label} `;
       const input = document.createElement("input"); input.type = "number"; input.value = owner[key]; input.step = key === "temperature" ? "any" : "1";
       input.onchange = () => {
         const value = Number(input.value);
