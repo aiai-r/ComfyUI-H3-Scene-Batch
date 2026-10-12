@@ -72,8 +72,8 @@ def project_media(root, relative):
     identity = hashlib.sha256(str(root).encode()).hexdigest()[:20]
     cache = contained(output, f'h3_scene_director/_external/{identity}')
     destination = contained(cache, source.relative_to(root))
-    stat = source.stat()
-    if not destination.is_file() or (destination.stat().st_size, destination.stat().st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+    if (not destination.is_file() or destination.stat().st_size != source.stat().st_size
+            or file_digest(destination) != file_digest(source)):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
     return destination
@@ -222,8 +222,9 @@ def refresh_batch(root, queue):
     if not attempt:
         return state
     prompt_id = attempt['prompt_id']
-    entry = queue.get_history(prompt_id).get(prompt_id)
+    # Queue removal and history insertion are atomic; read history after the queue.
     running, pending = queue.get_current_queue()
+    entry = queue.get_history(prompt_id).get(prompt_id)
     if entry:
         if entry.get('status', {}).get('status_str') == 'success':
             result = successful_result(queue, prompt_id, state['result_node'])

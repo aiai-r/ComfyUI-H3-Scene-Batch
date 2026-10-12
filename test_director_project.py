@@ -1,6 +1,7 @@
 import copy
 import importlib
 import json
+import os
 import shutil
 import tempfile
 import time
@@ -192,6 +193,51 @@ class DirectorProjectTests(unittest.TestCase):
             action('load', id=identity)
         with self.assertRaisesRegex(ValueError, '絶対パス'):
             project.project_path(str(self.root / 'missing'))
+
+    def test_external_asset_changes_with_identical_size_and_timestamp(self):
+        external = self.root / 'external'
+        external.mkdir()
+        source = external / 'ref.bmp'
+        Image.new('RGB', (32, 32), 'green').save(source)
+        cached = project.project_media(external, source.name)
+        original = source.read_bytes()
+        stat = source.stat()
+        Image.new('RGB', (32, 32), 'red').save(source)
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        self.assertEqual(source.stat().st_size, cached.stat().st_size)
+        self.assertEqual(source.stat().st_mtime_ns, cached.stat().st_mtime_ns)
+        self.assertNotEqual(source.read_bytes(), original)
+        with patch.object(project.shutil, 'copy2', wraps=shutil.copy2) as copies:
+            self.assertEqual(project.project_media(external, source.name), cached)
+            self.assertEqual(cached.read_bytes(), source.read_bytes())
+            self.assertEqual(copies.call_count, 1)
+            project.project_media(external, source.name)
+            self.assertEqual(copies.call_count, 1, 'Unchanged contents must not be copied again')
+
+    def test_batch_completion_between_queue_and_history_checks(self):
+        identity = self.save('source', 'T2V')
+        self.action('start', ids=[identity], owner='one', result_node='1211')
+        state = self.action('next', owner='one')['batch']
+        state['attempt']['created'] = time.time() - 120
+        project.write_json(project.project_path('test') / 'batch.json', state)
+        attempt = state['attempt']
+        self.queue.running = [(1, attempt['prompt_id'])]
+        get_history, get_queue = self.queue.get_history, self.queue.get_current_queue
+        reads = []
+        def read_then_complete(name, read, *args):
+            snapshot = copy.deepcopy(read(*args))
+            reads.append(name)
+            if len(reads) == 1:
+                self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
+                self.queue.running = []
+            return snapshot
+        with patch.object(self.queue, 'get_history', side_effect=lambda pid: read_then_complete('history', get_history, pid)), \
+             patch.object(self.queue, 'get_current_queue', side_effect=lambda: read_then_complete('queue', get_queue)):
+            result = self.action('status')['batch']
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual([s['id'] for s in result['completed']], [identity])
+        self.assertIsNone(result['attempt'])
+        self.assertEqual(self.action('status')['batch']['completed'], result['completed'])
 
     def test_start_at_project_position_and_resume_after_restart(self):
         self.save('first', 'T2V')
