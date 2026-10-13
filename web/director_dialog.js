@@ -107,10 +107,10 @@ export class DirectorLLM {
   async create(plan, scene, selected, state, action, onStory) {
     const analysis = await this.analyze(scene, undefined, false, state.instruction);
     const config = this.node.properties.h3_llm;
-    let story = state.story;
+    let story = action === "prompt" ? state.story : "";
     const graph = stage => {
       const value = draftGraph(config, scene, plan, stage, state.instruction, story, selected, analysis,
-        state.includePrevious ? state.sceneStory : "", state.includePrevious);
+        state.includePrevious && (selected !== null || action === "prompt") ? state.sceneStory : "", state.includePrevious);
       value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       return value;
     };

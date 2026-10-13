@@ -118,6 +118,8 @@ for (const action of ['story', 'story', 'prompt', 'prompt']) {
   await llm.create(plan, scene, 0, state, action, () => {});
 }
 assert.equal(new Set(generated.map(g => g.writer.inputs.seed)).size, 4);
+for (const index of [0, 1]) assert.equal(JSON.parse(generated[index].writer.inputs.custom_prompt).story, '', 'New stories must not receive the previous story');
+for (const index of [2, 3]) assert.equal(JSON.parse(generated[index].writer.inputs.custom_prompt).story, state.story, 'Prompt-only creation uses the editable story');
 for (const [first, second] of [[0, 1], [2, 3]]) {
   const before = structuredClone(generated[first]), after = structuredClone(generated[second]);
   delete before.writer.inputs.seed; delete after.writer.inputs.seed;
@@ -132,7 +134,19 @@ assert.notEqual(generated.at(-1).writer.inputs.seed, failedSeed, 'Retry must byp
 assert.ok(repaired[0].prompt.endsWith('Recovered complete prompt.'));
 assert.ok(repaired[0].prompt.startsWith('subject_definitions:'));
 await llm.create(plan, scene, 0, state, 'all', () => {});
+assert.equal(JSON.parse(generated.at(-2).writer.inputs.custom_prompt).story, '');
+assert.equal(JSON.parse(generated.at(-1).writer.inputs.custom_prompt).story, reply, 'Combined action uses only the freshly generated story');
 assert.notEqual(generated.at(-1).writer.inputs.seed, generated.at(-2).writer.inputs.seed);
+const twoCuts = { shots: [...plan.shots, { id: 'cut2', prompt: 'Old second cut', duration_seconds: 5 }] };
+const continuationState = { ...state, includePrevious: true, sceneStory: 'Old whole-scene story' };
+reply = JSON.stringify({ shots: twoCuts.shots.map(shot => ({ id: shot.id, prompt: 'Fresh prompt' })) });
+await llm.create(twoCuts, scene, null, continuationState, 'all', () => {});
+for (const graph of generated.slice(-2)) assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, '', 'Whole-scene regeneration must not reintroduce its old story as context');
+await llm.create(twoCuts, scene, 1, continuationState, 'story', () => {});
+const continuationRequest = JSON.parse(generated.at(-1).writer.inputs.custom_prompt);
+assert.equal(continuationRequest.story, '');
+assert.equal(continuationRequest.previous_prompt, plan.shots[0].prompt, 'Previous-cut continuity remains available');
+assert.equal(continuationRequest.scene_story, continuationState.sceneStory);
 assert.equal(calls.length, analysisCalls, 'Repeated writing must reuse image analyses');
 assert.deepEqual(node.properties.h3_llm, originalConfig, 'Transient LLM seeds must not invalidate analysis settings');
 assert.deepEqual(node.properties.h3_image_analyses, originalAnalyses);
