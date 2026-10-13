@@ -330,9 +330,12 @@ queuedRecord = null;
 await byText('ストーリー→Prompt').onclick(); assertHealthy();
 assert.equal(queuedRecord, null, 'Existing action does not generate video');
 field('カット 1 のPrompt').value = 'Old single-cut prompt with speech'; field('カット 1 のPrompt').oninput();
+promptOutput = JSON.stringify({ shots: [{ prompt: 'subject_definitions:\n<Subject 1> is the referenced person.\n\nsummary:\n[reference generation] Quiet study.\n\nretention_analysis:\n<Subject 1>: fully_preserved - appearance.\n\ndetailed_description:\n[Shot 1] The person writes silently.\n\noverall_soundscape:\nRoom tone and pen sounds only. No voices.\n\nnon_diegetic_music:\nN/A', start_state: 'Writing.', end_state: 'Still writing.' }] });
 onGenerate = async () => {
   assert.equal(field('カット 1 のPrompt').value, queuedRecord.plan.shots[0].prompt, 'The visible prompt updates before video generation');
   assert.deepEqual(JSON.parse(planWidget.serializeValue()), queuedRecord.plan, 'Queue serialization preserves the new prompt');
+  assert.deepEqual([...queuedRecord.plan.shots[0].prompt.matchAll(/^(\w+):$/gm)].map(match => match[1]), ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music']);
+  assert.ok(queuedRecord.plan.shots[0].prompt.endsWith('overall_soundscape:\nRoom tone and pen sounds only. No voices.\n\nnon_diegetic_music:\nN/A'));
   await byText('中止').onclick();
 };
 await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();

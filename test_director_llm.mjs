@@ -194,9 +194,24 @@ assert.match(referenceDefinitions([{label:'<Picture 1>',text:'<Subject 1> is Ali
 const finalPrompt = includeReferenceDefinitions('A woman sits at the desk.', definitions);
 assert.ok(finalPrompt.startsWith('subject_definitions:\n' + definitions));
 assert.ok(finalPrompt.endsWith('detailed_description:\nA woman sits at the desk.'));
-assert.equal(includeReferenceDefinitions('subject_definitions: WRONG detailed_description: A woman sits at the desk.',definitions), finalPrompt);
+assert.equal(includeReferenceDefinitions('subject_definitions: WRONG detailed_description: A woman sits at the desk.',definitions), finalPrompt.replace('detailed_description:\n', 'detailed_description: '));
 assert.equal(includeReferenceDefinitions('An empty room.', ''), 'An empty room.');
 assert.throws(() => includeReferenceDefinitions('subject_definitions: No video description.',definitions), /参照定義だけ/);
+const sections = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
+const structuredBody = 'summary:\n[reference generation] A silent study scene.\n\nretention_analysis:\n<Subject 1>: fully_preserved - appearance.\n\ndetailed_description:\n[Shot 1] She writes without speaking.\n\noverall_soundscape:\nRoom tone and pen scratches only. No voices.\n\nnon_diegetic_music:\nN/A';
+const structuredPrompt = includeReferenceDefinitions('subject_definitions:\n<Subject 1> WRONG\n\n' + structuredBody, definitions);
+assert.equal(structuredPrompt, 'subject_definitions:\n' + definitions + '\n\n' + structuredBody, 'Reference insertion preserves every section, including sound restrictions');
+assert.deepEqual([...structuredPrompt.matchAll(/^(\w+):$/gm)].map(match => match[1]), sections);
+assert.equal(includeReferenceDefinitions(structuredBody, definitions), structuredPrompt);
+const audioDefinition = '<Audio 1> is the voice-timbre reference for <Subject 1> (S1).\nIts source words are not copied.';
+const videoDefinition = '<Video 1> supplies the camera movement.';
+const mediaPrompt = includeReferenceDefinitions(`subject_definitions:\n<Subject 1> WRONG\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`, definitions);
+assert.equal(mediaPrompt, `subject_definitions:\n${definitions}\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`);
+const r2vSystem = draftGraph(config, scene, plan, 'prompt', '無言。環境音のみ。BGMなし。', '', 0).writer.inputs.system_prompt;
+for (const heading of sections) assert.ok(r2vSystem.includes(heading + ':'));
+assert.doesNotMatch(r2vSystem, /Return only the video description/);
+assert.match(r2vSystem, /no dialogue or vocalizations/);
+assert.match(r2vSystem, /BGMなし/);
 console.log('Reference definitions: image-order labels, multiview and storyboard preservation, multiple subjects, exact final insertion passed.');
 
 const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[0],label:'<Picture 2>',key:'same image'}]);

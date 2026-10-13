@@ -6,6 +6,17 @@ const ANALYSIS_SYSTEM_PROMPT = [
   "For first/last-frame inputs, retain the actual pose, composition and scene state needed at that boundary. Do not turn a boundary image into an appearance-only reference. Record visible facts and the reference purpose, not a new story or the requested future actions. Preserve readable text in its original language.",
 ].join("\n");
 
+const R2V_OUTPUT_INSTRUCTIONS = [
+  "Inside each shots[].prompt string, write all six plain-text sections in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, non_diegetic_music:. Keep the outer JSON contract. Write English except original dialogue, lyrics and visible text.",
+  "subject_definitions: Copy the saved image_analysis definitions without changing their labels, identities or reference purpose. Treat each multi-view individual as one person. Add definitions for supplied <Audio N> and <Video N> only when used, describing their declared roles; do not invent media content. The caller restores the saved visual definitions and preserves your audio/video definitions.",
+  "summary: Briefly describe the target scene and actual reference relationships, starting with a task prefix such as [reference generation] or [reference generation + audio reference]. An attached audio file alone does not mean its voice or signal should be heard.",
+  "retention_analysis: Describe the retained features for each used reference. Visual relationships use fully_preserved, partially_preserved, attribute_transfer or weak_reference. Audio relationships use fully_copy, partially_copy, reference or weak_reference. Distinguish voice-timbre guidance from copying a recording.",
+  "detailed_description: Establish visual style, then [Shot 1], composition, subjects, environment, lighting, actions, camera and synchronized sound in playback order. Use concrete detail rather than a plot summary. Honor fixed-camera and single-shot instructions. If additional shots are requested within a cut, mark their times as [Shot N] At MM:SS.mmm. Put preceding-cut continuity at the start of this section, after its heading and shot marker, not before subject_definitions.",
+  "For requested speech, use stable speaker IDs (S1), (S2) and <d>[Language] exact words</d> in detailed_description. Bind a referenced voice to its speaker. Referencing timbre does not authorize copying the reference's words or inventing additional speech. Do not repeat dialogue in the audio summary sections.",
+  "overall_soundscape: Describe the allowed room tone, ambience and physical sounds. non_diegetic_music: Describe audience-only background music, or N/A when none is requested. Always include both headings, even when silent. Put reference-audio relationships in the section for the audible layer they actually affect.",
+  "Carry the current instruction's sound restrictions into the final prompt explicitly and consistently. With 無言 or no speech, describe non-speaking actions and no dialogue or vocalizations; remove contradictory speaking cues. With 環境音のみ, include only ambience and physical sounds, no voices or music. With BGMなし, use non_diegetic_music: N/A without suppressing requested dialogue. With complete silence, specify no sound in overall_soundscape. Never infer an audible voice from an attached reference alone.",
+].join("\n");
+
 const WRITING_SYSTEM_PROMPT = [
   "You plan one independent MiniMax H3 video scene containing consecutive generated cuts.",
   "{{mode_instructions}}",
@@ -53,7 +64,7 @@ export function renderSystemPrompt(config, mode, action, partial = false, contin
   const values = {
     mode_instructions: modeInstructions(mode),
     continuity_instructions: continuation ? [
-      "For each continuation cut, begin the actual H3 prompt with a brief concrete description of the preceding cut's ending state, then describe the new action from that state. The first cut establishes the scene normally.",
+      "For each continuation cut, begin the scene description within the actual H3 prompt with a brief concrete description of the preceding cut's ending state, then describe the new action from that state. The first cut establishes the scene normally.",
       "Use previous_end_state when supplied; otherwise derive only supported ending details from previous_prompt. For a whole-scene draft, use the preceding cut's planned ending. These are textual plans, not observations of generated footage.",
       "Carry the relevant subjects, wardrobe, positions, pose, held objects, ongoing motion, camera direction and sound. Summarize the ending, not the earlier plot; do not restart completed actions, repeat dialogue, or reset the camera without an explicit instruction.",
       "Write this carry-over in the prompt field itself, not only start_state. Do not rely on 'as in the previous scene' as the explanation: state the visible situation explicitly, then advance it. If prior text is empty, do not invent a previous event.",
@@ -67,7 +78,7 @@ export function renderSystemPrompt(config, mode, action, partial = false, contin
   };
   const rendered = template.replace(/\{\{(mode_instructions|continuity_instructions|output_instructions)\}\}/g, (_, key) => values[key]);
   return rendered + (mode === "R2V" && action === "prompt"
-    ? "\nThe caller inserts the saved image_analysis verbatim as subject_definitions before each final prompt. Return only the video description in each prompt string, using those exact labels; do not generate, renumber or repeat subject_definitions. Describe each defined multi-view individual as one person in the scene, preserving the saved appearance-only or storyboard role."
+    ? "\n" + R2V_OUTPUT_INSTRUCTIONS
     : "");
 }
 
@@ -96,13 +107,17 @@ export function referenceDefinitions(references) {
 export function includeReferenceDefinitions(prompt, definitions) {
   if (!definitions.trim()) return prompt;
   let body = prompt.trim();
+  let mediaDefinitions = "";
   if (/^subject_definitions\s*:/i.test(body)) {
-    const start = body.search(/\bdetailed_description\s*:/i);
+    const start = body.search(/\b(?:summary|retention_analysis|detailed_description)\s*:/i);
     if (start < 0) throw new Error("LLMが参照定義だけを返しました。Promptを再作成してください。");
+    mediaDefinitions = body.slice(0, start).replace(/^subject_definitions\s*:\s*/i, "")
+      .split(/\n(?=\s*<(?:Subject|Picture|Audio|Video)\s+\d+>)/)
+      .filter(line => /^\s*<(?:Audio|Video)\s+\d+>/.test(line)).map(line => line.trim()).join("\n");
     body = body.slice(start);
   }
-  body = body.replace(/^detailed_description\s*:\s*/i, "");
-  return `subject_definitions:\n${definitions}\n\ndetailed_description:\n${body}`;
+  if (!/^(?:summary|retention_analysis|detailed_description)\s*:/i.test(body)) body = `detailed_description:\n${body}`;
+  return `subject_definitions:\n${definitions}${mediaDefinitions ? "\n" + mediaDefinitions : ""}\n\n${body}`;
 }
 
 export function sceneAssets(scene) {
