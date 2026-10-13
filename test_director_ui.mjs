@@ -56,7 +56,10 @@ class Queue {
   constructor() {}
   async generate(record) {
     this.busy = true;
-    try { queuedRecord = structuredClone(record); await onGenerate(); }
+    try {
+      node.widgets.find(w => w.name === "plan_json").serializeValue();
+      queuedRecord = structuredClone(record); await onGenerate();
+    }
     finally { this.busy = false; }
   }
   async stop() { generationStops++; }
@@ -314,6 +317,7 @@ await [...bulk.querySelectorAll('button')].find(b => b.textContent === 'Prompt�
 assert.equal(llmCalls.at(-1).data.selected_cut, null);
 assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt.split('detailed_description:\n')[1]), ['Generated cut2', 'Generated cut3']);
 assert.equal(root.querySelectorAll('.cut-writing button').length, 7, 'Multiple cuts expose the combined action only in the bulk section');
+field('カット 2 のPrompt').value = 'Old prompt with speech'; field('カット 2 のPrompt').oninput();
 queuedRecord = null;
 await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).data.selected_cut, null);
@@ -325,7 +329,12 @@ assert.equal(root.querySelectorAll('.cut-writing button').length, 8, 'Single cut
 queuedRecord = null;
 await byText('ストーリー→Prompt').onclick(); assertHealthy();
 assert.equal(queuedRecord, null, 'Existing action does not generate video');
-onGenerate = async () => { await byText('中止').onclick(); };
+field('カット 1 のPrompt').value = 'Old single-cut prompt with speech'; field('カット 1 のPrompt').oninput();
+onGenerate = async () => {
+  assert.equal(field('カット 1 のPrompt').value, queuedRecord.plan.shots[0].prompt, 'The visible prompt updates before video generation');
+  assert.deepEqual(JSON.parse(planWidget.serializeValue()), queuedRecord.plan, 'Queue serialization preserves the new prompt');
+  await byText('中止').onclick();
+};
 await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
 assert.deepEqual(llmCalls.slice(-2).map(c => c.stage), ['story', 'prompt']);
 assert.equal(llmCalls.at(-1).data.selected_cut, 1);
@@ -333,6 +342,9 @@ assert.equal(queuedRecord.plan.shots.length, 1);
 assert.deepEqual(queuedRecord.plan, JSON.parse(planWidget.serializeValue()));
 assert.equal(generationStops, 1, 'Stop targets video generation after the LLM stage');
 onGenerate = async () => {};
+const combinedPlan = structuredClone(queuedRecord.plan);
+await byText('このシーンを生成').onclick(); assertHealthy();
+assert.deepEqual(queuedRecord.plan, combinedPlan, 'Subsequent generation keeps the new prompt');
 queuedRecord = null; promptOutput = 'invalid JSON';
 await byText('ストーリー→Prompt→生成').onclick();
 assert.ok(root.querySelector('[role="alert"]').textContent);
