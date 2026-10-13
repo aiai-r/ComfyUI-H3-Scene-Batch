@@ -19,7 +19,7 @@ Object.defineProperty(window.HTMLSelectElement.prototype, "value", { ...selectVa
   const selected = [...this.options].find(option => option.value === value);
   if (selected) selected.selected = true;
 } });
-let extension, draftOpened = false, queuedRecord;
+let extension, draftOpened = false, queuedRecord, onGenerate = async () => {}, generationStops = 0;
 const uploaded = [];
 const uploadedBytes = new Map();
 const llmCalls = [], history = new Map();
@@ -54,7 +54,12 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
 };
 class Queue {
   constructor() {}
-  async generate(record) { queuedRecord = structuredClone(record); }
+  async generate(record) {
+    this.busy = true;
+    try { queuedRecord = structuredClone(record); await onGenerate(); }
+    finally { this.busy = false; }
+  }
+  async stop() { generationStops++; }
   async batch(...args) { batchCalls.push(args); }
 }
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "ref.png", role: "reference" }, { kind: "image", file: "other.png", role: "reference" }] };
@@ -308,6 +313,36 @@ const bulk = [...root.querySelectorAll('details')].find(e => e.querySelector('su
 await [...bulk.querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).data.selected_cut, null);
 assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt.split('detailed_description:\n')[1]), ['Generated cut2', 'Generated cut3']);
+assert.equal(root.querySelectorAll('.cut-writing button').length, 7, 'Multiple cuts expose the combined action only in the bulk section');
+queuedRecord = null;
+await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
+assert.equal(llmCalls.at(-1).data.selected_cut, null);
+assert.deepEqual(queuedRecord.plan, JSON.parse(planWidget.serializeValue()), 'Bulk generation uses the newly applied prompts');
+const multiplePlan = planWidget.serializeValue();
+const singlePlan = JSON.parse(multiplePlan); singlePlan.shots = singlePlan.shots.slice(0, 1);
+planWidget.value = JSON.stringify(singlePlan); node.onConfigure();
+assert.equal(root.querySelectorAll('.cut-writing button').length, 8, 'Single cut exposes the combined action outside the accordion too');
+queuedRecord = null;
+await byText('ストーリー→Prompt').onclick(); assertHealthy();
+assert.equal(queuedRecord, null, 'Existing action does not generate video');
+onGenerate = async () => { await byText('中止').onclick(); };
+await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
+assert.deepEqual(llmCalls.slice(-2).map(c => c.stage), ['story', 'prompt']);
+assert.equal(llmCalls.at(-1).data.selected_cut, 1);
+assert.equal(queuedRecord.plan.shots.length, 1);
+assert.deepEqual(queuedRecord.plan, JSON.parse(planWidget.serializeValue()));
+assert.equal(generationStops, 1, 'Stop targets video generation after the LLM stage');
+onGenerate = async () => {};
+queuedRecord = null; promptOutput = 'invalid JSON';
+await byText('ストーリー→Prompt→生成').onclick();
+assert.ok(root.querySelector('[role="alert"]').textContent);
+assert.equal(queuedRecord, null, 'Invalid prompts do not start video generation');
+promptOutput = null;
+onPrompt = () => { byText('中止').onclick(); };
+await byText('ストーリー→Prompt→生成').onclick();
+assert.equal(queuedRecord, null, 'Cancelled LLM work does not start video generation');
+onPrompt = () => {};
+planWidget.value = multiplePlan; node.onConfigure();
 console.log("Director DOM: direct prompt updates, sequential cut continuity, RUN serialization, invalid-output preservation, concurrent edits, story-only and bulk generation passed.");
 console.log('Director UI: mode buttons, 9/3/3 lanes, shared boundary slots, locked L2V start, slot drops, pointer swapping/moving, reference order, replacement, removal and reload passed.');
 libraryData = { directory: '/workspace/MyScenes', scenes: Array.from({ length: 40 }, (_, i) => ({ id: `s${i + 1}`, title: `Scene ${i + 1}`, mode: 'T2V', cuts: 2, video: null })),

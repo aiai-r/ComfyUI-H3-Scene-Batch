@@ -70,7 +70,7 @@ function attachDirector(node) {
   const toolbar = element(root, "div", "toolbar row");
   const draft = button(toolbar, "LLM設定", () => { collect(); openLLMSettings(node); });
   const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
-  button(toolbar, "中止", () => llmBusy ? llm.stop() : queue.project || queue.busy || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
+  button(toolbar, "中止", () => queue.busy ? queue.stop() : llmBusy ? llm.stop() : queue.project || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
   let plan, scene, cut = 0, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
   let uploading = false, trackScroll = 0, pastedPlan = "";
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
@@ -194,17 +194,24 @@ function attachDirector(node) {
       element(section, "div", "muted", `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
     }
     const buttons = element(section, "div", "row");
-    for (const [text, action] of [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]]) {
+    const actions = [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]];
+    if (selected === null || plan.shots.length === 1) actions.push(["ストーリー→Prompt→生成", "generate"]);
+    for (const [text, action] of actions) {
       button(buttons, text, () => llmTask(async () => {
         const baseline = structuredClone(plan), sourceScene = structuredClone(scene);
         const prompts = await llm.create(baseline, sourceScene, selected, {
           instruction: state.instructions[scope] ?? "", story: state.stories[scope] ?? "",
           includePrevious: selected === null || selected > 0 && (state.previous[scope] ?? true), sceneStory: state.stories.all ?? "",
-        }, action, value => { state.stories[scope] = value; changed(); });
+        }, action === "generate" ? "all" : action, value => { state.stories[scope] = value; changed(); });
         if (prompts) {
           collect();
           if (JSON.stringify(scene) !== JSON.stringify(sourceScene)) throw new Error("処理中に素材・モードが変わりました。Promptを再作成してください。");
           plan = applyDraft(plan, baseline, prompts); save();
+          if (action === "generate") {
+            if (llm.cancelled) return;
+            await queue.generate(structuredClone({ plan, scene }));
+            return;
+          }
         }
         status.textContent = prompts ? `${label}のPromptを作成し、Prompt欄に反映しました。`
           : `${label}のストーリーを作成しました。ストーリー欄で確認・編集できます。`;
