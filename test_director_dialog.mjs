@@ -139,9 +139,10 @@ assert.equal(JSON.parse(generated.at(-1).writer.inputs.custom_prompt).story, rep
 assert.notEqual(generated.at(-1).writer.inputs.seed, generated.at(-2).writer.inputs.seed);
 const twoCuts = { shots: [...plan.shots, { id: 'cut2', prompt: 'Old second cut', duration_seconds: 5 }] };
 const continuationState = { ...state, includePrevious: true, sceneStory: 'Old whole-scene story' };
-reply = JSON.stringify({ shots: twoCuts.shots.map(shot => ({ id: shot.id, prompt: 'Fresh prompt' })) });
+reply = JSON.stringify({ shots: [{ prompt: 'Fresh prompt' }] });
 await llm.create(twoCuts, scene, null, continuationState, 'all', () => {});
-for (const graph of generated.slice(-2)) assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, '', 'Whole-scene regeneration must not reintroduce its old story as context');
+assert.equal(JSON.parse(generated.at(-3).writer.inputs.custom_prompt).scene_story, '');
+for (const graph of generated.slice(-2)) assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, reply, 'Whole-scene prompts use the fresh allocation');
 await llm.create(twoCuts, scene, 1, continuationState, 'story', () => {});
 const continuationRequest = JSON.parse(generated.at(-1).writer.inputs.custom_prompt);
 assert.equal(continuationRequest.story, '');
@@ -152,6 +153,59 @@ assert.deepEqual(node.properties.h3_llm, originalConfig, 'Transient LLM seeds mu
 assert.deepEqual(node.properties.h3_image_analyses, originalAnalyses);
 assert.deepEqual(plan, originalPlan, 'Video seeds and existing prompts remain unchanged');
 console.log('Director LLM regeneration: fresh writing seeds, malformed-reply retry, JSON repair, image reuse and unchanged video seeds passed.');
+
+const fourCuts = { shots: [7, 15, 10, 20].map((duration_seconds, index) => ({ id: `part${index}`, duration_seconds, prompt: 'Old prompt', end_state: 'Old ending' })) };
+const fourBefore = structuredClone(fourCuts), sequentialCalls = [];
+const allocation = '各カットの時間に合わせて、入室、着席、会話、退室を割り振る。';
+llm.execute = async graph => {
+  const request = JSON.parse(graph.writer.inputs.custom_prompt);
+  sequentialCalls.push({ request, system: graph.writer.inputs.system_prompt });
+  if (request.selected_cut === null) return allocation;
+  const cut = request.selected_cut;
+  return JSON.stringify({ shots: [{ prompt: `Prompt ${cut}`, start_state: `Start ${cut}`, end_state: `End ${cut}` }] });
+};
+let savedStory;
+const sequentialDrafts = await llm.create(fourCuts, scene, null, continuationState, 'all', story => { savedStory = story; });
+assert.equal(savedStory, allocation);
+assert.equal(sequentialCalls.length, 5, 'One story plus four sequential prompts');
+assert.deepEqual(sequentialCalls.map(c => c.request.selected_cut), [null, 1, 2, 3, 4]);
+assert.deepEqual(sequentialCalls[0].request.scene_cuts.map(c => c.duration_seconds), [7, 15, 10, 20]);
+assert.match(sequentialCalls[0].system, /Plan ALL cuts together/);
+for (let index = 0; index < 4; index++) {
+  const { request, system } = sequentialCalls[index + 1];
+  assert.equal(request.story, allocation);
+  assert.equal(request.scene_story, allocation);
+  assert.equal(request.scene_cuts.length, 4);
+  assert.match(system, /Reference audio supplies voice timbre only/);
+  assert.match(system, /except dialogue explicitly requested for this cut/);
+  assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
+  if (index) {
+    assert.equal(request.previous_prompt, sequentialDrafts[index - 1].prompt);
+    assert.equal(request.previous_end_state, `End ${index}`);
+  } else assert.equal(request.previous_prompt, undefined);
+}
+assert.deepEqual(fourCuts, fourBefore, 'Drafts remain local until all cuts succeed');
+sequentialCalls.length = 0;
+await llm.create(fourCuts, scene, null, { ...continuationState, story: allocation }, 'prompt', () => assert.fail('Prompt-only must not create a story'));
+assert.equal(sequentialCalls.length, 4);
+assert.equal(sequentialCalls[0].request.story, allocation);
+sequentialCalls.length = 0;
+await llm.create(fourCuts, scene, null, continuationState, 'story', () => {});
+assert.equal(sequentialCalls.length, 1);
+const normalExecute = llm.execute;
+llm.execute = async graph => {
+  const request = JSON.parse(graph.writer.inputs.custom_prompt);
+  if (request.selected_cut === 2) throw new Error('Second cut failed');
+  return normalExecute(graph);
+};
+await assert.rejects(llm.create(fourCuts, scene, null, continuationState, 'all', () => {}), /Second cut failed/);
+assert.deepEqual(fourCuts, fourBefore);
+llm.execute = async graph => { const result = await normalExecute(graph); llm.cancelled = true; return result; };
+await assert.rejects(llm.create(fourCuts, scene, null, continuationState, 'prompt', () => {}), /中止/);
+assert.deepEqual(fourCuts, fourBefore);
+llm.cancelled = false;
+llm.execute = normalExecute;
+console.log('Whole-scene allocation, sequential continuity, scoped audio instructions, prompt-only, story-only, failure and cancellation passed.');
 
 const fresh = { mode:'R2V',assets:[{kind:'image',file:'new-person.png',slot:0},{kind:'image',file:'new-board.png',slot:2}] };
 bytes.set('new-person.png','new-person'); bytes.set('new-board.png','new-board');

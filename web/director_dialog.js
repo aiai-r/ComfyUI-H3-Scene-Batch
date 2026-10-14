@@ -108,9 +108,28 @@ export class DirectorLLM {
     const analysis = await this.analyze(scene, undefined, false, state.instruction);
     const config = this.node.properties.h3_llm;
     let story = action === "prompt" ? state.story : "";
-    const graph = stage => {
-      const value = draftGraph(config, scene, plan, stage, state.instruction, story, selected, analysis,
-        state.includePrevious && (selected !== null || action === "prompt") ? state.sceneStory : "", state.includePrevious);
+    const working = selected === null ? structuredClone(plan) : plan;
+    const graph = (stage, cut = selected) => {
+      const value = draftGraph(config, scene, working, stage, state.instruction, story, cut, analysis,
+        state.includePrevious && (selected !== null || action === "prompt") ? state.sceneStory : "", selected === null || state.includePrevious);
+      if (selected === null) {
+        const request = JSON.parse(value.writer.inputs.custom_prompt);
+        request.scene_story = story;
+        request.scene_cuts = plan.shots.map((shot, index) => ({ index: index + 1, id: shot.id ?? `cut${index + 1}`,
+          duration_seconds: shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15, length: shot.length }));
+        value.writer.inputs.custom_prompt = JSON.stringify(request);
+        value.writer.inputs.system_prompt = value.writer.inputs.system_prompt.replace(
+          "With 環境音のみ, include only ambience and physical sounds, no voices or music.",
+          "With 環境音のみ, include only ambience and physical sounds except dialogue explicitly requested for this cut; no other voices or music.");
+        value.writer.inputs.system_prompt += "\n" + [
+          "This is a whole-scene workflow. Preserve the user's complete action sequence across scene_cuts, respecting each cut's supplied duration. Never fit the entire scene into each cut.",
+          "Preserve the user's image-to-audio speaker mapping with stable speaker IDs. Reference audio supplies voice timbre only unless copying audio is explicitly requested; it does not authorize speech or copying its words.",
+          "Allocate only explicitly requested dialogue to the appropriate cut, with its exact words and speaker. Do not invent monologue, narration, dialogue or vocalizations. Cuts without assigned dialogue must explicitly specify no speech or vocalizations. With requested dialogue plus 環境音のみ, allow that dialogue only in its assigned cut and environmental/physical sounds elsewhere. Preserve BGMなし in every cut.",
+          stage === "story"
+            ? "Plan ALL cuts together from the current instruction. Use one labeled section per supplied cut, including its index, ID, duration, starting state, paced actions/camera, ending state, exact assigned dialogue or no speech, voice-reference mapping and sound restrictions. Decide how much action fits each duration; cover every requested event in order without duplication or omissions. Honor explicit timing such as an initial silent interval. Return the complete editable allocation in the instruction's language."
+            : "The story is the whole-scene allocation. Write ONLY selected_cut using its assigned events and duration, not events assigned to later cuts. Preserve its exact dialogue, speaker-to-audio mapping and sound restrictions in the actual prompt. For continuation cuts, begin the scene description with the concrete ending situation from previous_end_state and previous_prompt, then advance the assigned action; do not repeat completed dialogue or actions. This continuity must be in prompt itself, not just start_state.",
+        ].join("\n");
+      }
       value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       return value;
     };
@@ -119,6 +138,19 @@ export class DirectorLLM {
       onStory(story);
     }
     if (action === "story") return null;
+    if (selected === null) {
+      const drafts = [];
+      for (let index = 0; index < working.shots.length; index++) {
+        if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
+        const text = await this.execute(graph("prompt", index), `Prompt作成中：${index + 1}/${working.shots.length}カット…`);
+        if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
+        const [draft] = readDraft(text, working, index);
+        if (scene.mode === "R2V") draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
+        working.shots[index] = { ...working.shots[index], prompt: draft.prompt, start_state: draft.start_state, end_state: draft.end_state };
+        drafts.push(draft);
+      }
+      return drafts;
+    }
     const text = await this.execute(graph("prompt"), "Prompt作成中…");
     const drafts = readDraft(text, plan, selected);
     if (scene.mode === "R2V") for (const draft of drafts) draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
