@@ -18,12 +18,6 @@ class StoryProbeTests(unittest.TestCase):
         text = '\n'.join(f'**cut{i}**\nScene' for i in range(1, 5))
         self.assertEqual(audit(self.record(text, 'length'))['diagnosis'], 'output_limit_reached')
 
-    def test_script_owned_cut_markers_are_counted(self):
-        text = '\n'.join(f'[[cut:cut{i}]]\nduration_seconds: 15\nstarting_state: Start\nending_state: End' for i in range(1, 5))
-        result = audit(self.record(text))
-        self.assertEqual(result['diagnosis'], 'all_cut_headings_present')
-        self.assertTrue(all(all(fields.values()) for fields in result['fields'].values()))
-
     def test_both_observed_field_formats_have_duration_and_boundary_states(self):
         for duration in ('**Duration:** 15 seconds', '**duration_seconds:** 15', '**duration_seconds**: 15'):
             text = '\n'.join(f'**cut{i}**\n{duration}\n**start_state:** Start\n**ending_state:** End' for i in range(1, 5))

@@ -117,7 +117,6 @@ export class DirectorLLM {
       if (selected === null) {
         const request = JSON.parse(value.writer.inputs.custom_prompt);
         request.scene_story = story;
-        if (stage === 'prompt') request.selected_cut_id = plan.shots[cut].id ?? `cut${cut + 1}`;
         request.scene_cuts = plan.shots.map((shot, index) => ({ index: index + 1, id: shot.id ?? `cut${index + 1}`,
           duration_seconds: shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15, length: shot.length }));
         value.writer.inputs.custom_prompt = JSON.stringify(request);
@@ -128,13 +127,13 @@ export class DirectorLLM {
             : "The story is the whole-scene allocation. Write ONLY selected_cut using its assigned events and duration, not events assigned to later cuts. Preserve its exact dialogue, speaker-to-audio mapping and sound restrictions in the actual prompt. For continuation cuts, begin the scene description with the concrete ending situation from previous_end_state and previous_prompt, then advance the assigned action; do not repeat completed dialogue or actions. This continuity must be in prompt itself, not just start_state.",
         ].join("\n");
       }
-      if (bindings) bindings.prepare(value, stage);
+      if (bindings) bindings.prepare(value);
       value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       return value;
     };
     if (action === "story" || action === "all") {
       story = await this.execute(graph("story"), "ストーリー作成中…");
-      if (bindings) story = bindings.story(story, selected === null ? plan : { ...plan, shots: [{ ...plan.shots[selected], id: plan.shots[selected].id ?? `cut${selected + 1}` }] }, selected === null);
+      if (bindings) story = bindings.decode(story);
       onStory(story);
     }
     if (action === "story") return null;
@@ -144,20 +143,16 @@ export class DirectorLLM {
         if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
         const text = await this.execute(graph("prompt", index), `Prompt作成中：${index + 1}/${working.shots.length}カット…`);
         if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
-        const [draft] = readDraft(text, working, index);
-        if (bindings) bindings.finish(draft, analysis, working.shots[index].duration_seconds ?? working.defaults?.duration_seconds ?? 15, working.shots[index - 1]?.end_state ?? '', bindings.dialogueFor(story, working.shots[index].id ?? `cut${index + 1}`));
-        else if (scene.mode === "R2V") draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
+        const [draft] = readDraft(bindings ? bindings.decode(text) : text, working, index);
+        if (scene.mode === "R2V") draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
         working.shots[index] = { ...working.shots[index], prompt: draft.prompt, start_state: draft.start_state, end_state: draft.end_state };
         drafts.push(draft);
       }
       return drafts;
     }
     const text = await this.execute(graph("prompt"), "Prompt作成中…");
-    const drafts = readDraft(text, plan, selected);
-    if (scene.mode === "R2V") for (const draft of drafts) {
-      if (bindings) bindings.finish(draft, analysis, plan.shots[draft.index].duration_seconds ?? plan.defaults?.duration_seconds ?? 15, state.includePrevious ? plan.shots[draft.index - 1]?.end_state ?? '' : '', bindings.dialogueFor(story, plan.shots[draft.index].id ?? `cut${draft.index + 1}`));
-      else draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
-    }
+    const drafts = readDraft(bindings ? bindings.decode(text) : text, plan, selected);
+    if (scene.mode === "R2V") for (const draft of drafts) draft.prompt = includeReferenceDefinitions(draft.prompt, analysis);
     return drafts;
   }
 }

@@ -22,10 +22,8 @@ for (const maxTokens of [2048, 4096]) for (const count of [4, 5, 6]) for (const 
   const llm = new DirectorLLM({ properties: { h3_llm: settings } }, () => {});
   llm.analyze = async () => analysis;
   let graph;
-  const captured = Symbol('captured');
-  llm.execute = async value => { graph = value; throw captured; };
-  try { await llm.create(plan, scene, null, { instruction, story: '', includePrevious: true, sceneStory: '' }, 'story', () => {}); }
-  catch (error) { if (error !== captured) throw error; }
+  llm.execute = async value => { graph = value; return ''; };
+  await llm.create(plan, scene, null, { instruction, story: '', includePrevious: true, sceneStory: '' }, 'story', () => {});
   graph.writer.inputs.seed = seed;
   cases.push({ name: `${count}cuts_${maxTokens}tokens_seed${seed}`, count, max_tokens: maxTokens, seed, graph });
 }

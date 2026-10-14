@@ -8,11 +8,11 @@ import sys
 
 def audit(record):
     text = record['text']
-    headings = list(re.finditer(r'(?im)^(?:\[\[cut:cut(\d+)\]\]|(?:[-*]\s+)?(?:#{1,6}\s*)?(?:\*\*)?(?:cut|カット)\s*(\d+)\b)[^\n]*', text))
+    headings = list(re.finditer(r'(?im)^(?:[-*]\s+)?(?:#{1,6}\s*)?(?:\*\*)?(?:cut|カット)\s*(\d+)\b[^\n]*', text))
     cuts = {}
     for index, heading in enumerate(headings):
         end = headings[index + 1].start() if index + 1 < len(headings) else len(text)
-        cuts[int(heading[1] or heading[2])] = text[heading.start():end]
+        cuts[int(heading[1])] = text[heading.start():end]
     expected = set(range(1, record['count'] + 1))
     missing = sorted(expected - cuts.keys())
     unexpected = sorted(cuts.keys() - expected)
