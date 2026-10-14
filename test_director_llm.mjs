@@ -160,6 +160,16 @@ assert.equal(repairedPlan.shots[1].prompt, "Continue from the gate.");
 const exact = 'She says "Hello", then passes a sign reading "prompt": "example". Path C:\\garden.\nNext line.';
 const promptOnly = JSON.stringify({ shots: [{ prompt: exact }] });
 assert.equal(readDraft(promptOnly, plan, 1)[0].prompt, exact);
+for (const newline of ['\n', '\r\n', '\r']) for (const backslashes of ['', '\\', '\\\\', '\\\\\\']) {
+  const expected = 'First line' + '\\'.repeat(Math.floor(backslashes.length / 2)) + '\nSecond line';
+  const malformed = '{\n"shots":[{"id":"b","prompt":"First line' + backslashes + newline + 'Second line","end_state":"Done"}]\n}';
+  assert.equal(readDraft(malformed, plan, 1)[0].prompt, expected, 'Repair raw newlines while preserving literal backslashes');
+  assert.equal(readDraft(malformed, { shots: [{ id: 'b' }] })[0].prompt, expected);
+  assert.equal(readDraft(malformed, plan, 1)[0].end_state, 'Done');
+}
+const malformedWithQuotes = JSON.stringify({ shots: [{ prompt: exact, start_state: 'Start', end_state: 'End' }] }).replace('\\nNext line.', '\\\nNext line.');
+assert.equal(readDraft(malformedWithQuotes, plan, 1)[0].prompt, exact, 'Keep dialogue quotes, paths and complete content intact');
+assert.throws(() => readDraft('{"shots":[{"prompt":"First\\\nunfinished', plan, 1), /Prompt|返答/);
 assert.equal(readDraft(promptOnly.slice(0, -2), plan, 1)[0].prompt, exact, "Recover complete text when the JSON closing brackets are missing");
 assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","end_state":"unfinished', plan, 1)[0].prompt, "Intact text.");
 assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","start_state":"bad\\q"}]}', plan, 1)[0].start_state, "");

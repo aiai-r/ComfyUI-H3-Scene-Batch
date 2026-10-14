@@ -21,7 +21,7 @@ const VOICE_REFERENCE_INSTRUCTIONS = [
 
 const R2V_OUTPUT_INSTRUCTIONS = [
   "Inside each shots[].prompt string, write all six plain-text sections in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, non_diegetic_music:. Keep the outer JSON contract. Write English except original dialogue, lyrics and visible text.",
-  "subject_definitions: Copy the saved image_analysis definitions without changing their labels, identities or reference purpose. Treat each multi-view individual as one person. Add definitions for supplied <Audio N> and <Video N> only when used, describing their declared roles; do not invent media content. The caller restores the saved visual definitions and preserves your audio/video definitions.",
+  "subject_definitions: The caller inserts the saved image_analysis definitions verbatim after your reply, so do not recopy those visual definitions. Use their labels, identities and reference purposes consistently throughout the prompt; treat each multi-view individual as one person. Write definitions for supplied <Audio N> and <Video N> when used, describing their declared roles; do not invent media content. Keep the subject_definitions heading even when you have no additional media definitions.",
   "summary: Briefly describe the target scene and actual reference relationships, starting with a task prefix such as [reference generation] or [reference generation + audio reference]. An attached audio file alone does not mean its voice or signal should be heard.",
   "retention_analysis: Describe the retained features for each used reference. Visual relationships use fully_preserved, partially_preserved, attribute_transfer or weak_reference. Audio relationships use fully_copy, partially_copy, reference or weak_reference. Distinguish voice-timbre guidance from copying a recording.",
   "detailed_description: Establish visual style, then [Shot 1], composition, subjects, environment, lighting, actions, camera and synchronized sound in playback order. Use concrete detail rather than a plot summary. Honor fixed-camera and single-shot instructions. If additional shots are requested within a cut, mark their times as [Shot N] At MM:SS.mmm. Put preceding-cut continuity at the start of this section, after its heading and shot marker, not before subject_definitions.",
@@ -84,7 +84,7 @@ export function renderSystemPrompt(config, mode, action, partial = false, contin
       : "Write a self-contained H3 prompt for this cut. There is no preceding-cut context to describe; do not invent a previous scene or a continuation instruction.",
     output_instructions: [action === "story"
       ? `Return a concise editable story outline in the language of the instruction, with a beginning/action/ending for ${partial ? "only the selected cut" : "each supplied cut"}. Return only the outline.`
-      : `Return ONLY JSON: {"shots":[{${partial ? "" : '"id":"existing id",'}"prompt":"English H3 prompt","start_state":"...","end_state":"..."}]}. No markdown, no seeds, no durations, no extra cuts.`,
+      : `Return ONLY JSON: {"shots":[{${partial ? "" : '"id":"existing id",'}"prompt":"English H3 prompt","start_state":"...","end_state":"..."}]}. No markdown, no seeds, no durations, no extra cuts. Escape line breaks and quotation marks inside JSON strings; never put a literal line break or a backslash followed by a literal line break inside a string.`,
       partial ? "Return only the selected cut. Other cuts are context only; do not rewrite them." : "",
     ].filter(Boolean).join("\n"),
   };
@@ -200,6 +200,25 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
   return graph;
 }
 
+function repairDraftNewlines(text) {
+  let result = "", inString = false, escaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (inString && (char === "\n" || char === "\r")) {
+      if (escaped) result = result.slice(0, -1);
+      result += "\\n";
+      escaped = false;
+      if (char === "\r" && text[index + 1] === "\n") index++;
+    } else {
+      result += char;
+      if (escaped) escaped = false;
+      else if (inString && char === "\\") escaped = true;
+      else if (char === '"') inString = !inString;
+    }
+  }
+  return result;
+}
+
 export function readDraft(text, plan, selected = null) {
   const content = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let source;
@@ -207,7 +226,7 @@ export function readDraft(text, plan, selected = null) {
   catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     // Some LLM responses double the opening quote on JSON field names.
-    const repaired = content.replace(/([{,]\s*)""(shots|id|prompt|start_state|end_state)"\s*:/g, '$1"$2":');
+    const repaired = repairDraftNewlines(content.replace(/([{,]\s*)""(shots|id|prompt|start_state|end_state)"\s*:/g, '$1"$2":'));
     try { source = JSON.parse(repaired); }
     catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
