@@ -207,6 +207,28 @@ const audioDefinition = '<Audio 1> is the voice-timbre reference for <Subject 1>
 const videoDefinition = '<Video 1> supplies the camera movement.';
 const mediaPrompt = includeReferenceDefinitions(`subject_definitions:\n<Subject 1> WRONG\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`, definitions);
 assert.equal(mediaPrompt, `subject_definitions:\n${definitions}\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`);
+for (const separator of [' ', '\n', '\r\n', '\n\n']) {
+  const entries = ['<Subject 1> Wrong appearance.', audioDefinition, '<Picture 2> Wrong background.',
+    '<Audio 2> is the voice-timbre reference for <Subject 2> (S2).', videoDefinition];
+  const result = includeReferenceDefinitions('subject_definitions: ' + entries.join(separator) + '\n' + structuredBody, definitions);
+  assert.ok(result.includes(audioDefinition), 'Keep the complete audio definition, including its internal subject reference');
+  assert.ok(result.includes(entries[3]));
+  assert.ok(result.includes(videoDefinition));
+  assert.doesNotMatch(result, /Wrong appearance|Wrong background/);
+  assert.ok(result.endsWith(structuredBody), 'Sound and dialogue sections remain verbatim');
+  assert.equal(includeReferenceDefinitions(result, definitions), result, 'Repeated reference insertion does not lose or duplicate media');
+}
+for (const action of ['story', 'prompt']) for (const selected of [null, 0, 1]) {
+  const system = draftGraph(config, scene, plan, action, '最初は無言。そのあと「こんにちは」と言う。環境音のみ。BGMなし。', '', selected).writer.inputs.system_prompt;
+  assert.match(system, /Japanese quotation marks 「」/);
+  assert.match(system, /first-person camera or 一人称視点 does not imply a spoken monologue/);
+  assert.match(system, /specified people and time intervals/);
+  assert.match(system, /except dialogue explicitly requested for this cut/);
+  assert.match(system, /<Audio 1> is the voice-timbre reference for <Subject 1> \(S1\)/);
+  assert.match(system, /discard that addition/);
+  assert.equal(system.split('With 環境音のみ,').length, 2, 'One shared sound policy per request');
+  assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
+}
 const r2vSystem = draftGraph(config, scene, plan, 'prompt', '無言。環境音のみ。BGMなし。', '', 0).writer.inputs.system_prompt;
 for (const heading of sections) assert.ok(r2vSystem.includes(heading + ':'));
 assert.doesNotMatch(r2vSystem, /Return only the video description/);

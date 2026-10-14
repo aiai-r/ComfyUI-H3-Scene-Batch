@@ -6,6 +6,19 @@ const ANALYSIS_SYSTEM_PROMPT = [
   "For first/last-frame inputs, retain the actual pose, composition and scene state needed at that boundary. Do not turn a boundary image into an appearance-only reference. Record visible facts and the reference purpose, not a new story or the requested future actions. Preserve readable text in its original language.",
 ].join("\n");
 
+const SOUND_INSTRUCTIONS = [
+  "Preserve the user's exact requested dialogue, including words in Japanese quotation marks 「」, speaker and timing. Do not invent monologue, narration, dialogue or vocalizations; preserve explicitly requested nonverbal sounds. A first-person camera or 一人称視点 does not imply a spoken monologue.",
+  "Apply 無言, no speech and silence to the specified people and time intervals, not indiscriminately to the whole scene. For a wholly non-speaking cut, explicitly write no dialogue or vocalizations in its action description and sound description. For a cut with dialogue, mark when the specified line starts and ends, then return to non-speaking action; do not fill the remaining time with speech or repeat completed dialogue from previous cuts.",
+  "With 環境音のみ, include only ambience and physical sounds except dialogue explicitly requested for this cut; no other voices or music. Explicitly requested nonverbal sounds are also limited to their assigned moments. With BGMなし, use non_diegetic_music: N/A without suppressing requested dialogue. With complete silence, specify no sound in overall_soundscape.",
+  "Carry these sound restrictions into both the story and the actual prompt, not only start_state or end_state. If the supplied story invents speech or contradicts the user's audio restrictions, discard that addition. Before returning, check that every utterance is authorized by the current instruction and that every silent interval remains non-speaking.",
+].join("\n");
+
+const VOICE_REFERENCE_INSTRUCTIONS = [
+  "Preserve the user's image-to-audio speaker mapping with stable speaker IDs. Reference audio supplies voice timbre only when the user requests a voice reference; an audio file may instead supply ambience, music or direct reuse when explicitly requested. Its presence never authorizes speech or copying its words.",
+  "Convert numbered user media references to the supplied <Picture N>, <Audio N> and <Video N> labels. For each requested voice mapping, explicitly retain the audio label, the corresponding visual subject and speaker ID in the story and prompt. For example: <Audio 1> is the voice-timbre reference for <Subject 1> (S1). This is a format example, not an assignment for the current assets. Do not infer speaker IDs from picture numbers or reorder the supplied media labels.",
+  "In a speaking cut, include the voice mapping in subject_definitions, its reference-only relationship in retention_analysis, and the relevant <Audio N> beside the speaker's specified dialogue in detailed_description. In a non-speaking cut, state that attached voice references do not produce audible speech. Never infer an audible voice from an attached reference alone.",
+].join("\n");
+
 const R2V_OUTPUT_INSTRUCTIONS = [
   "Inside each shots[].prompt string, write all six plain-text sections in this order: subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, non_diegetic_music:. Keep the outer JSON contract. Write English except original dialogue, lyrics and visible text.",
   "subject_definitions: Copy the saved image_analysis definitions without changing their labels, identities or reference purpose. Treat each multi-view individual as one person. Add definitions for supplied <Audio N> and <Video N> only when used, describing their declared roles; do not invent media content. The caller restores the saved visual definitions and preserves your audio/video definitions.",
@@ -14,7 +27,6 @@ const R2V_OUTPUT_INSTRUCTIONS = [
   "detailed_description: Establish visual style, then [Shot 1], composition, subjects, environment, lighting, actions, camera and synchronized sound in playback order. Use concrete detail rather than a plot summary. Honor fixed-camera and single-shot instructions. If additional shots are requested within a cut, mark their times as [Shot N] At MM:SS.mmm. Put preceding-cut continuity at the start of this section, after its heading and shot marker, not before subject_definitions.",
   "For requested speech, use stable speaker IDs (S1), (S2) and <d>[Language] exact words</d> in detailed_description. Bind a referenced voice to its speaker. Referencing timbre does not authorize copying the reference's words or inventing additional speech. Do not repeat dialogue in the audio summary sections.",
   "overall_soundscape: Describe the allowed room tone, ambience and physical sounds. non_diegetic_music: Describe audience-only background music, or N/A when none is requested. Always include both headings, even when silent. Put reference-audio relationships in the section for the audible layer they actually affect.",
-  "Carry the current instruction's sound restrictions into the final prompt explicitly and consistently. With 無言 or no speech, describe non-speaking actions and no dialogue or vocalizations; remove contradictory speaking cues. With 環境音のみ, include only ambience and physical sounds, no voices or music. With BGMなし, use non_diegetic_music: N/A without suppressing requested dialogue. With complete silence, specify no sound in overall_soundscape. Never infer an audible voice from an attached reference alone.",
 ].join("\n");
 
 const WRITING_SYSTEM_PROMPT = [
@@ -77,7 +89,7 @@ export function renderSystemPrompt(config, mode, action, partial = false, contin
     ].filter(Boolean).join("\n"),
   };
   const rendered = template.replace(/\{\{(mode_instructions|continuity_instructions|output_instructions)\}\}/g, (_, key) => values[key]);
-  return rendered + (mode === "R2V" && action === "prompt"
+  return rendered + "\n" + SOUND_INSTRUCTIONS + (mode === "R2V" ? "\n" + VOICE_REFERENCE_INSTRUCTIONS : "") + (mode === "R2V" && action === "prompt"
     ? "\n" + R2V_OUTPUT_INSTRUCTIONS
     : "");
 }
@@ -112,7 +124,7 @@ export function includeReferenceDefinitions(prompt, definitions) {
     const start = body.search(/\b(?:summary|retention_analysis|detailed_description)\s*:/i);
     if (start < 0) throw new Error("LLMが参照定義だけを返しました。Promptを再作成してください。");
     mediaDefinitions = body.slice(0, start).replace(/^subject_definitions\s*:\s*/i, "")
-      .split(/\n(?=\s*<(?:Subject|Picture|Audio|Video)\s+\d+>)/)
+      .split(/\r?\n(?=\s*<(?:Subject|Picture|Audio|Video)\s+\d+>)|(?<=[.!?;])\s+(?=<(?:Subject|Picture|Audio|Video)\s+\d+>)/)
       .filter(line => /^\s*<(?:Audio|Video)\s+\d+>/.test(line)).map(line => line.trim()).join("\n");
     body = body.slice(start);
   }
