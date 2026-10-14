@@ -1,13 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey } from '../web/director_llm.js';
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings } from '../web/director_llm.js';
 
 const [workflowPath, outputPath] = process.argv.slice(2);
 const workflow = JSON.parse(await readFile(workflowPath, 'utf8'));
 const config = workflow.nodes.find(n => n.type === 'H3SceneDirector').properties.h3_llm;
 const source = (await readFile(new URL('../web/director_dialog.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export ', '');
-const DirectorLLM = new Function('draftGraph', 'readDraft', 'sceneAssets', 'referenceDescriptions', 'referenceDefinitions', 'includeReferenceDefinitions', 'imageAnalysisKey', 'crypto', source + '\nreturn DirectorLLM;')(
-  draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, crypto);
+const DirectorLLM = new Function('draftGraph', 'readDraft', 'sceneAssets', 'referenceDescriptions', 'referenceDefinitions', 'includeReferenceDefinitions', 'imageAnalysisKey', 'DirectorBindings', 'crypto', source + '\nreturn DirectorLLM;')(
+  draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings, crypto);
 const scene = { mode: 'R2V', assets: [
   { kind: 'image', file: 'worker.png' }, { kind: 'image', file: 'workshop.png' }, { kind: 'image', file: 'supervisor.png' },
   { kind: 'audio', file: 'worker.wav' }, { kind: 'audio', file: 'supervisor.wav' },
@@ -22,8 +22,10 @@ for (const maxTokens of [2048, 4096]) for (const count of [4, 5, 6]) for (const 
   const llm = new DirectorLLM({ properties: { h3_llm: settings } }, () => {});
   llm.analyze = async () => analysis;
   let graph;
-  llm.execute = async value => { graph = value; return ''; };
-  await llm.create(plan, scene, null, { instruction, story: '', includePrevious: true, sceneStory: '' }, 'story', () => {});
+  const captured = Symbol('captured');
+  llm.execute = async value => { graph = value; throw captured; };
+  try { await llm.create(plan, scene, null, { instruction, story: '', includePrevious: true, sceneStory: '' }, 'story', () => {}); }
+  catch (error) { if (error !== captured) throw error; }
   graph.writer.inputs.seed = seed;
   cases.push({ name: `${count}cuts_${maxTokens}tokens_seed${seed}`, count, max_tokens: maxTokens, seed, graph });
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey } from "./web/director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings } from "./web/director_llm.js";
 
 const calls = [], history = new Map(), bytes = new Map([["one.png", "one"], ["two.png", "two"]]);
 let failed = false, pending;
@@ -19,8 +19,8 @@ const api = { async fetchApi(path, options) {
 } };
 const source = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 let nextSeed = 1000;
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "includeReferenceDefinitions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
-  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "includeReferenceDefinitions", "imageAnalysisKey", "DirectorBindings", "crypto", source + "\nreturn DirectorLLM;")(
+  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
 const node = { properties: { h3_llm: { loader: { model: "existing" }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }, graph: { change() {} } };
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "one.png" }, { kind: "image", file: "two.png" }] };
 const llm = new LLM(node, () => {});
