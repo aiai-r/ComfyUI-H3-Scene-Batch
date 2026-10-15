@@ -202,6 +202,8 @@ function attachDirector(node) {
       element(totalSlot, "span", "muted",`${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
     }
     const buttons = element(section, "div", "row");
+    // Whole-scene writing is driven by the instruction, so its buttons sit right under it.
+    if (selected === null) storyPanel.before(buttons);
     const actions = [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]];
     if (selected === null || plan.shots.length === 1) actions.push(["ストーリー→Prompt→生成", "generate"]);
     for (const [text, action] of actions) {
