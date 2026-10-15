@@ -37,14 +37,18 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
     if (path.startsWith('/view?')) return { ok: true, arrayBuffer: async () => uploadedBytes.get(new URL(path, 'http://localhost').searchParams.get('filename')) ?? new TextEncoder().encode(path).buffer };
     if (path.startsWith('/history/')) { const id = path.split('/').pop(); return { ok: true, json: async () => ({ [id]: history.get(id) }) }; }
     if (path === '/prompt') {
-      const graph = JSON.parse(request.body).prompt, data = JSON.parse(graph.writer.inputs.custom_prompt);
-      const stage = graph.images ? 'analysis' : data.total_seconds != null ? 'scene'
+      const graph = JSON.parse(request.body).prompt, custom = graph.writer.inputs.custom_prompt;
+      const scenePlan = custom.startsWith('You are a master film director');
+      const data = scenePlan ? { total_seconds: Number(custom.match(/Total Runtime: EXACTLY ([0-9.]+) seconds/)[1]), text: custom } : JSON.parse(custom);
+      const stage = graph.images ? 'analysis' : scenePlan ? 'scene'
         : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
       llmCalls.push({ stage, data, system: graph.writer.inputs.system_prompt, parameters: graph.parameters.inputs });
       const sections = body => ['subject_definitions:', '<Subject 1> is the referenced person.', '', 'summary:', body, '', 'retention_analysis:', '<Subject 1>: fully_preserved.', '',
         'detailed_description:', body, '', 'overall_soundscape:', 'Room tone.', '', 'non_diegetic_music:', 'N/A'].join('\n');
       const text = stage === 'analysis' ? 'A person stands in a garden.' : stage === 'story' ? '庭を歩いて振り返る'
-        : stage === 'scene' ? sceneOutput ?? ['=== STORY ===', '| 1 | 歩く |', '| 2 | 振り返る |', '', '=== CUT 1 (duration: 15s) ===', sections('Walk'), '', '=== CUT 2 (duration: 12s) ===', sections('Turn')].join('\n')
+        : stage === 'scene' ? sceneOutput ?? (() => { const first = Math.min(15, Math.ceil(data.total_seconds / 2));
+          return ['### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)', '| Clip 1 | 歩く |', '| Clip 2 | 振り返る |', '', '### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)', '',
+            `=== SCENE 1 (duration: ${first}s) ===`, '```text', sections('Walk'), '```', '', `=== SCENE 2 (duration: ${data.total_seconds - first}s) ===`, '```text', sections('Turn'), '```'].join('\n'); })()
         : promptOutput ?? JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id, start_state: 'Start ' + c.id, end_state: 'End ' + c.id })) });
       if (stage === 'prompt') onPrompt();
       const id = String(llmCalls.length); history.set(id, { status: { completed: true }, outputs: { result: { text: [text] } } });
@@ -321,10 +325,12 @@ const storyBefore = field('全カットのストーリー').value;
 await [...bulk.querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).stage, 'scene', 'One request plans every cut');
 assert.equal(llmCalls.at(-1).data.total_seconds, 30);
-assert.match(llmCalls.at(-1).system, /# Full-Reference Mode Rewrite Output Format Guide/);
+assert.equal(llmCalls.at(-1).system, '', 'The whole request is one user message, as in short_storygen_h3');
+assert.match(llmCalls.at(-1).data.text, /# Full-Reference Mode Rewrite Output Format Guide/);
+assert.match(llmCalls.at(-1).data.text, /DECIDE YOURSELF how many clips/);
 assert.equal(llmCalls.at(-1).parameters.max_tokens, 4096, 'Several complete prompts use the node maximum output');
 let planned = JSON.parse(planWidget.serializeValue());
-assert.deepEqual(planned.shots.map(s => [s.id, s.duration_seconds]), [['cut1', 15], ['cut2', 15]], 'LLM cut lengths are fitted to the total');
+assert.deepEqual(planned.shots.map(s => [s.id, s.duration_seconds]), [['cut1', 15], ['cut2', 15]], 'The LLM decides the cut lengths');
 assert.ok(planned.shots.every(s => s.prompt.startsWith('subject_definitions:') && s.prompt.endsWith('non_diegetic_music:\nN/A')));
 assert.equal(field('全カットのストーリー').value, storyBefore, 'Prompt-only creation keeps the story');
 assert.equal(root.querySelectorAll('.cut-writing button').length, 7, 'Multiple cuts expose the combined action only in the bulk section');
@@ -334,16 +340,17 @@ await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).stage, 'scene');
 assert.equal(llmCalls.at(-1).data.total_seconds, 25);
 planned = JSON.parse(planWidget.serializeValue());
-assert.deepEqual(planned.shots.map(s => s.duration_seconds), [14, 11], 'Cut lengths are adjusted to the new total');
+assert.deepEqual(planned.shots.map(s => s.duration_seconds), [13, 12]);
 assert.match(field('全カットのストーリー').value, /歩く/, 'The combined action stores the allocation as the story');
 assert.deepEqual(queuedRecord.plan, planned, 'Bulk generation uses the newly applied prompts');
-sceneOutput = '=== CUT 1 (duration: 15s) ===\nsubject_definitions:\nA\n\n=== CUT 2 (duration: 15s) ===\ndetailed_description:\nB';
-const beforeInvalid = planWidget.serializeValue();
+sceneOutput = '### Part 2\n\n=== SCENE 1 (duration: 5s) ===\n```text\nsubject_definitions:\nA\n```\n\n=== SCENE 2 (duration: 20s) ===\n```text\ndetailed_description:\nB\n```';
 queuedRecord = null;
 await byText('ストーリー→Prompt→生成').onclick();
-assert.match(root.querySelector('[role="alert"]').textContent, /6項目/);
-assert.equal(planWidget.serializeValue(), beforeInvalid, 'Incomplete cut prompts do not replace cuts');
-assert.equal(queuedRecord, null, 'Incomplete cut prompts do not start video generation');
+assert.match(root.querySelector('[role="alert"]').textContent, /カット 2 が20秒です/);
+assert.match(root.querySelector('[role="alert"]').textContent, /カット 1 のPromptに公式の6項目/);
+planned = JSON.parse(planWidget.serializeValue());
+assert.deepEqual(planned.shots.map(s => [s.duration_seconds, s.prompt]), [[5, 'subject_definitions:\nA'], [20, 'detailed_description:\nB']], 'Problem results are kept for inspection');
+assert.equal(queuedRecord, null, 'Problem results do not start video generation');
 sceneOutput = null;
 const findBulk = () => [...root.querySelectorAll('details')].find(e => e.querySelector('summary')?.textContent === '補助操作：全カットまとめて作成');
 field('合計生成秒数（overlap込み）').value = '10'; field('合計生成秒数（overlap込み）').oninput();

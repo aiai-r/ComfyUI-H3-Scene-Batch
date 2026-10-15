@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, fitDurations } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, scenePrompt, normalizeMediaReferences } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -223,20 +223,27 @@ const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[
 assert.match(duplicate, /<Subject 1> is one woman in <Picture 1> and <Picture 2>/);
 assert.doesNotMatch(duplicate, /<Subject 2>/, 'Identical image inputs do not create another person');
 
-const cutPrompt = (body, appears) => ['subject_definitions:', '<Subject 1> is the woman.', '', 'summary:', 'One cut.', '', 'retention_analysis:', `<Subject 1> (appears in ${appears}): fully_preserved.`, '',
+const cutPrompt = body => ['subject_definitions:', '<Subject 1> is the woman.', '', 'summary:', 'One cut.', '', 'retention_analysis:', '<Subject 1>: fully_preserved.', '',
   'detailed_description:', body, '', 'overall_soundscape:', 'Room tone.', '', 'non_diegetic_music:', 'N/A'].join('\n');
-const sceneReply = ['=== STORY ===', '| 1 | 15秒 | 勉強 |', '',
-  '=== CUT 1 (duration: 15s) ===', cutPrompt('[Shot 1] She writes. [Shot 2] At 00:08.000, he watches.', '[Shot 1], [Shot 2]'),
-  '=== CUT 2 (duration: 10s) ===', cutPrompt('[Shot 1] At 00:15.000, close-up. [Shot 2] At 00:19.500, he speaks.', '[Shot 1], [Shot 2], [Shot 3], [Shot 4]'),
-  '=== CUT 3 (duration: 20s) ===', cutPrompt('[Shot 3] At 00:25.000, he reaches. [Shot 4] At 00:40.000, she smiles.', '[Shot 3]')].join('\n');
+const block = (n, seconds, body) => [`=== SCENE ${n} (duration: ${seconds}s) ===`, '```text', cutPrompt(body), '```', ''];
+const sceneReply = ['### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)', '| Clip 1 | 15秒 | 勉強 |', '', '### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)', '',
+  ...block(1, 15, '[Shot 1] She writes. [Shot 2] At 00:08.000, he watches.'),
+  ...block(2, 10, '[Shot 1] Close-up. [Shot 2] At 00:19.500, he speaks.'),
+  ...block(3, 20, '[Shot 1] He reaches. [Shot 2] At 00:30.000, she smiles.')].join('\n');
 const planned = readScene(sceneReply, 45, 'all');
-assert.match(planned.story, /勉強/);
-assert.deepEqual(planned.cuts.map(c => c.duration_seconds), [15, 15, 15], 'Cuts over 15 seconds are fitted to the total');
-assert.match(planned.cuts[0].prompt, /\[Shot 1\] She writes\. \[Shot 2\] At 00:08\.000, he watches\./, 'Cut-local times stay unchanged');
-assert.match(planned.cuts[1].prompt, /\[Shot 1\] close-up\. \[Shot 2\] At 00:04\.500, he speaks\./, 'Scene-wide times restart at the cut');
-assert.match(planned.cuts[2].prompt, /\[Shot 1\] he reaches\. \[Shot 2\] At 00:14\.500, she smiles\./, 'Shot numbers restart and stay inside the cut');
-for (const c of planned.cuts) assert.match(c.prompt, /\(appears in \[Shot 1\], \[Shot 2\]\)/);
-assert.equal(readScene('=== STORY ===\n| 1 | 歩く |', 45, 'story').story, '| 1 | 歩く |');
-assert.throws(() => readScene(sceneReply.replace('summary:\nOne cut.\n\n', ''), 45, 'all'), /6項目/);
-assert.throws(() => fitDurations([15, 15], 45), /カット数/);
-console.log('Whole-scene plan: cut blocks, fitted lengths and per-cut shot timelines passed.');
+assert.equal(planned.story, '| Clip 1 | 15秒 | 勉強 |');
+assert.deepEqual(planned.cuts.map(c => c.duration_seconds), [15, 10, 20], 'The LLM cut lengths are kept as written');
+assert.deepEqual(planned.problems, ['カット 3 が20秒です（1カットは4〜15秒）。']);
+assert.match(planned.cuts[0].prompt, /\[Shot 2\] At 00:08\.000, he watches\./, 'Cut-local times stay unchanged');
+assert.match(planned.cuts[1].prompt, /\[Shot 2\] At 00:04\.500, he speaks\./, 'Scene-wide times restart at the cut, as in short_storygen_h3');
+assert.deepEqual(readScene(sceneReply.replace('summary:\nOne cut.\n\n', ''), 45, 'all').problems.filter(p => p.includes('6項目')).length, 1);
+assert.match(readScene(sceneReply.replace('(duration: 20s)', '(duration: 15s)'), 45, 'all').problems[0], /合計が40秒/);
+assert.equal(readScene(sceneReply, 45, 'story').story, '| Clip 1 | 15秒 | 勉強 |');
+assert.deepEqual([...normalizeMediaReferences('画像1は音声1、画像3は音声2').found], ['<Picture 1>', '<Audio 1>', '<Picture 3>', '<Audio 2>']);
+const request = scenePrompt(60, '画像1は音声1を使う。', '', [{ number: 1, filename: 'woman.png', note: '', analysis: '<Subject 1> is the woman shown in <Picture 1>.' }]);
+assert.match(request, /Total Runtime: EXACTLY 60\.00 seconds\./);
+assert.match(request, /- <Picture 1> \(woman\.png\): Assigned Role = <Picture 1> Reference; User Note = none; Saved Visual Analysis = \{"description":"<Subject 1> is the woman shown in <Picture 1>\."\}/);
+assert.match(request, /USER DIRECTION:\n<Picture 1>は<Audio 1>を使う。/);
+assert.match(request, /- <Audio 1>: declared by the user; its contents were not inspected/);
+assert.match(request, /8\. \*\*Complete prompt in every clip\*\*/);
+console.log('Whole-scene plan: short_storygen_h3 request, kept cut lengths, reported problems and per-cut timelines passed.');

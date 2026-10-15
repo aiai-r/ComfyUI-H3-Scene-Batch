@@ -52,135 +52,179 @@ const R2V_PROMPT_SYSTEM_PROMPT = [
 
 export const SCENE_CUT_SECONDS = { min: 4, max: 15 };
 
-// Whole-scene R2V: one request plans the cuts and writes every cut, like short_storygen_h3.
-function sceneSystemPrompt(action, totalSeconds, hasStory) {
-  const { min, max } = SCENE_CUT_SECONDS;
-  const table = [
-    "=== STORY ===",
-    "ストーリー概要: (Japanese, two or three sentences)",
-    "| カット | 秒数 | 内容・Shot構成 | 前カットからの引き継ぎ・末尾の未完アクション | セリフ・音 |",
-    "|---|---|---|---|---|",
-    "| 1 | 15秒 | ... | (末尾: 〜している最中で終了) | ... |",
-    "| 2 | 9秒 | ... | (冒頭: 〜を継続 / 末尾: 〜で終了) | ... |",
-  ].join("\n");
-  const cuts = [
-    "=== CUT 1 (duration: 15s) ===",
-    "subject_definitions:\n...\n\nsummary:\n...\n\nretention_analysis:\n...\n\ndetailed_description:\n...\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...",
-    "",
-    "=== CUT 2 (duration: 9s) ===",
-    "subject_definitions:\n...",
-    "",
-    "Continue with === CUT 3 (duration: Xs) === and so on until the story is finished.",
-  ].join("\n");
-  const planning = [
-    `The input is a JSON request from a scene editor. instruction is the user's direct instruction for one continuous scene with a total generation length of exactly ${totalSeconds} seconds. image_analysis holds saved descriptions of the reference images, and references lists the attached media labels in order.`,
-    hasStory
-      ? "story is the user-approved allocation. Keep its cut count, order, per-cut seconds, events, dialogue and sound exactly; only write the cut prompts from it."
-      : "Read the whole instruction and decide yourself how many cuts the scene needs and how long each cut is.",
-    "",
-    "CUT PLANNING RULES (MANDATORY):",
-    `1. Every cut is a separate MiniMax H3 generation, so each cut lasts between ${min} and ${max} seconds, in whole or half seconds. No cut may be longer than ${max} seconds; when events need more time, split them into more cuts.`,
-    `2. The cut lengths add up to exactly ${totalSeconds} seconds, so the scene needs at least ${Math.ceil(totalSeconds / max)} cuts. Check the sum before writing.`,
-    "3. Match each cut's length to what happens inside it; do not give every cut the same length. A short beat becomes an extra [Shot] inside a neighbouring cut instead of a cut of its own.",
-    "4. Cover every requested event in order without omissions or duplicates. Do not add events, dialogue or sounds the user did not ask for.",
-    "5. Each cut has its own timeline starting at 0 seconds. The first shot of EVERY cut is [Shot 1] with no timestamp, and later shots inside that cut count from 00:00.000 of that cut and stay within its own length. Never continue shot numbers or the scene-wide clock from earlier cuts. Wrong in CUT 2: [Shot 2] At 00:15.000, ... Right in CUT 2: [Shot 1] ... then [Shot 2] At 00:04.000, ...",
-    "6. Every cut after the first continues the previous cut's unfinished motion, camera direction, pose, background and sound. Begin its detailed_description with wording like \"Continue the unfinished [action/camera movement] from the previous cut without resetting stride or pose. Keep the incoming camera direction, lighting and ambience.\" End every non-final cut while an action is still in progress.",
-    "7. Each cut is generated alone, so EVERY cut prompt must be complete: all six sections in order, and subject_definitions repeats every subject and every voice-reference <Audio N> line used by the scene. Never shorten later cuts to only detailed_description.",
-    "8. The summary of a cut describes only that cut, not the rest of the scene.",
-    "9. Write each spoken line only in the cut where it is spoken, inside <d>[Japanese] ...</d> with its speaker <Subject N> (Sx). A cut without dialogue states that nobody speaks.",
-  ].join("\n");
-  const output = action === "story"
-    ? ["OUTPUT FORMAT:", "Return only the Japanese allocation below and nothing else. Do not write any H3 prompt yet.", "", table].join("\n")
-    : ["OUTPUT FORMAT:", "No Markdown fences, preface or commentary.",
-      hasStory ? "Return only the cut blocks below." : "First return the Japanese allocation, then the cut blocks.", "",
-      ...(hasStory ? [] : [table, ""]), cuts].join("\n");
-  return [planning, "", R2V_REFERENCE_RULES, "", output].join("\n");
+// Whole-scene R2V follows short_storygen_h3's AI-planned Contex-Loop request (core/h3_prompter.py
+// _build_auto_plan_chain_prompt), sent as one user message. Only change: every clip must carry the
+// six full-reference sections, because each clip is generated alone.
+const MEDIA_LIMITS = { Picture: 9, Audio: 3, Video: 3 };
+const MEDIA_ALIASES = { a: "Audio", audio: "Audio", 音声: "Audio", v: "Video", video: "Video", 動画: "Video", i: "Picture", image: "Picture", picture: "Picture", 画像: "Picture" };
+
+function mediaTag(kind, number) {
+  if (number < 1 || number > MEDIA_LIMITS[kind]) throw new Error(`${kind}参照は1～${MEDIA_LIMITS[kind]}で指定してください: ${kind} ${number}`);
+  return `<${kind} ${number}>`;
 }
 
-export function sceneGraph(config, scene, totalSeconds, action, instruction, story, analysis) {
-  if (!config?.loader || !config?.prompt || !config?.story) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
-  const hasStory = action !== "story" && Boolean(story.trim());
-  const stage = action === "story" ? config.story : config.prompt;
-  const parameters = JSON.parse(JSON.stringify(stage.parameters));
+export function normalizeMediaReferences(text) {
+  const translated = text.replace(/[ＡａＩｉＶｖ０-９]/g, c => "AaIiVv0123456789"["ＡａＩｉＶｖ０１２３４５６７８９".indexOf(c)]);
+  const normalized = translated
+    .replace(/(?<![<A-Za-z0-9_])(audio|音声|a|video|動画|v|image|picture|画像|i)\s*([0-9]+)(?![>A-Za-z0-9_])/gi, (_, kind, number) => mediaTag(MEDIA_ALIASES[kind.toLowerCase()], Number(number)))
+    .replace(/<(Picture|Audio|Video)\s+([0-9]+)>/gi, (_, kind, number) => mediaTag(kind[0].toUpperCase() + kind.slice(1).toLowerCase(), Number(number)));
+  const found = new Set([...normalized.matchAll(/<(Picture|Audio|Video) ([0-9]+)>/g)].map(m => m[0]));
+  return { text: normalized, found };
+}
+
+function mediaManifest(found, pictures) {
+  const allowed = new Set([...found, ...pictures.map(n => mediaTag("Picture", n))]);
+  if (!allowed.size) return "VALIDATED MEDIA REFERENCE INVENTORY: none. Do not introduce <Picture N>, <Audio N>, or <Video N> references.";
+  const lines = ["VALIDATED MEDIA REFERENCE INVENTORY:", "Use these exact native MiniMax H3 labels. Preserve the user's stated purpose for each asset. Do not invent another media reference."];
+  for (const kind of ["Picture", "Audio", "Video"]) for (let number = 1; number <= MEDIA_LIMITS[kind]; number++) {
+    const tag = `<${kind} ${number}>`;
+    if (!allowed.has(tag)) continue;
+    lines.push(`- ${tag}: ${kind === "Picture" && pictures.includes(number) ? "its saved visual analysis is provided separately" : "declared by the user; its contents were not inspected"}`);
+  }
+  return lines.join("\n");
+}
+
+const seconds2 = value => Number(value).toFixed(2);
+const REFERENCE_HANDLING_RULE = "The original images are not attached to this generation step. Use their saved visual analyses only. Audio and video contents are not analyzed; use those assets only as explicitly directed by the user.";
+
+// images: [{ number, filename, note, analysis }]
+export function scenePrompt(totalSeconds, instruction, story, images) {
+  const { min, max } = SCENE_CUT_SECONDS;
+  const minStr = seconds2(min), maxStr = seconds2(max), totalStr = seconds2(totalSeconds);
+  const { text, found } = normalizeMediaReferences([instruction, story].filter(s => s.trim()).join("\n\nAPPROVED STORY ALLOCATION:\n"));
+  const userInstruction = `${mediaManifest(found, images.map(i => i.number))}\n\nUSER DIRECTION:\n${text.trim()}`;
+  const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = <Picture ${i.number}> Reference; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
+    : "No reference images supplied.";
+  const sections = "subject_definitions:\n...\n\nsummary:\n...\n\nretention_analysis:\n...\n\ndetailed_description:\n[Shot 1] ...\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
+  return `You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
+Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
+
+=======================================================
+PROJECT SPECIFICATIONS:
+- Base Mode: R2V (Base Mode: R2V (Reference-to-Video). Maintain character/subject identities (<Subject 1>, etc.) consistently across all scenes.)
+- Total Runtime: EXACTLY ${totalStr} seconds.
+- Number of Clips: YOU decide it from the story. Do not pad the story to reach a number, and do not cut the story short.
+- Length of Each Clip: YOU decide it individually, between ${minStr} and ${maxStr} seconds.
+- Visual Style / Art Direction: Use the saved visual analyses when present, otherwise infer the most fitting cinematic style from the user story
+- Pre-analyzed Reference Images:
+${imagesContext}
+${REFERENCE_HANDLING_RULE}
+
+USER STORY CONCEPT / INSTRUCTION:
+"""${userInstruction}"""
+
+USER-PROVIDED MINIMAX H3 GUIDE:
+${H3_REF_GUIDE}
+
+=======================================================
+CLIP PLANNING RULES (MANDATORY):
+1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between ${minStr} and ${maxStr} seconds. State it as a whole or half second value.
+2. **Exact total**: the sum of every declared clip length MUST equal exactly ${totalStr} seconds.
+3. **Do NOT give every clip the same length.** Match each clip's length to the weight of what happens inside it: a quiet beat can be ${minStr}-6 seconds, a long continuous action can run up to ${maxStr} seconds.
+4. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
+5. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
+6. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
+7. **Dialogue**: wrap spoken dialogue in \`<d>[Japanese] ...</d>\` with speaker ID \`(S1)\`.
+8. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and voice-reference <Audio N> line used in that clip. Never shorten later clips to only detailed_description.
+
+=======================================================
+OUTPUT FORMAT:
+
+### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)
+- **ストーリー概要**: Overall narrative arc.
+- **クリップ配分表** (one row per clip; the seconds column is the raw H3 generation length of that clip):
+| クリップ | 秒数 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・末尾の未完アクション | 音響・BGM |
+|---|---|---|---|---|
+| Clip 1 | 9秒 | ... | (末尾: 〜〜している最中で終了) | ... |
+| Clip 2 | 13秒 | ... | (冒頭: 〜〜を継続 / 末尾: 〜〜で終了) | ... |
+- **合計**: クリップ数と生の生成秒数合計。
+
+### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)
+
+Output one block per clip under \`### Part 2\`, in order. The header of each block MUST carry that clip's own length exactly in this form:
+
+=== SCENE 1 (duration: 9s) ===
+\`\`\`text
+${sections}
+\`\`\`
+
+=== SCENE 2 (duration: 13s) ===
+\`\`\`text
+${sections.replace("[Shot 1] ...", "Continue the unfinished action from the previous clip...\n[Shot 1] ...")}
+\`\`\`
+
+Continue with \`=== SCENE 3 (duration: Xs) ===\` and so on until the story is finished.
+`;
+}
+
+export function sceneGraph(config, totalSeconds, instruction, story, images) {
+  if (!config?.loader || !config?.prompt) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
+  const parameters = JSON.parse(JSON.stringify(config.prompt.parameters));
   // Several complete six-section prompts need the llama-cpp node's maximum output (4096).
   parameters.max_tokens = 4096;
-  const request = { mode: scene.mode, total_seconds: totalSeconds, instruction, story: hasStory ? story : "", image_analysis: analysis,
-    references: referenceDescriptions(scene).map(r => ({ ...r, image_attached: false })) };
   return {
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
     parameters: { class_type: "llama_cpp_parameters", inputs: parameters },
-    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(stage.inputs)),
-      llama_model: ["model", 0], parameters: ["parameters", 0], custom_prompt: JSON.stringify(request),
-      system_prompt: sceneSystemPrompt(action, totalSeconds, hasStory) } },
+    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(config.prompt.inputs)),
+      llama_model: ["model", 0], parameters: ["parameters", 0], system_prompt: "", custom_prompt: scenePrompt(totalSeconds, instruction, story, images) } },
     result: { class_type: "PreviewAny", inputs: { source: ["writer", 0] } },
   };
 }
 
-// Keep the LLM's cut count and force half-second cut lengths to the requested total.
-export function fitDurations(durations, totalSeconds) {
-  const target = Math.round(totalSeconds * 2);
-  if (Math.abs(target / 2 - totalSeconds) > 1e-9) throw new Error("合計秒数は0.5秒単位で指定してください。");
-  const low = SCENE_CUT_SECONDS.min * 2, high = SCENE_CUT_SECONDS.max * 2;
-  if (target < durations.length * low || target > durations.length * high) {
-    throw new Error(`LLMが決めたカット数（${durations.length}）では、合計${totalSeconds}秒を各カット${SCENE_CUT_SECONDS.min}〜${SCENE_CUT_SECONDS.max}秒に収められません。再作成してください。`);
-  }
-  const units = durations.map(value => Math.min(Math.max(Math.round(value * 2), low), high));
-  let delta = target - units.reduce((a, b) => a + b, 0);
-  while (delta) {
-    const step = Math.sign(delta);
-    for (let index = 0; index < units.length && delta; index++) {
-      if (step > 0 ? units[index] < high : units[index] > low) { units[index] += step; delta -= step; }
-    }
-  }
-  return units.map(value => value / 2);
+// short_storygen_h3 normalize_scene_timestamps: fold a clip written on the story timeline back to 0s.
+function sceneTimestamps(prompt, length, offset) {
+  const pattern = /(At\s+)(?:(\d{1,2}):)?(\d{2})\.(\d{3})/gi;
+  const value = m => (m[2] ? Number(m[2]) : 0) * 60 + Number(m[3]) + Number(m[4]) / 1000;
+  const found = [...prompt.matchAll(pattern)].map(value);
+  const cumulative = found.length > 0 && offset > 0 && found.some(v => v >= length) && found.every(v => v >= offset);
+  return prompt.replace(pattern, (...m) => {
+    const total = value(m);
+    let relative;
+    if (cumulative) relative = total - offset;
+    else if (total >= length) relative = offset > 0 && total >= offset ? total - offset : total % length;
+    else return m[0];
+    if (relative >= length) relative = Math.max(length - 0.5, 0);
+    relative = Math.max(relative, 0);
+    return `${m[1]}${String(Math.floor(relative / 60)).padStart(2, "0")}:${String(Math.floor(relative % 60)).padStart(2, "0")}.${String(Math.round((relative % 1) * 1000)).padStart(3, "0")}`;
+  });
 }
 
 const SECTIONS = ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"];
 
+// Parse like short_storygen_h3 _parse_chain_scenes, but keep the LLM's own clip lengths and report problems.
 export function readScene(text, totalSeconds, action) {
-  const content = text.trim().replace(/^```(?:text|markdown)?\s*$/gim, "").replace(/^```\s*$/gm, "");
-  const header = /^[ \t#*]*=+\s*CUT\s+(\d+)\s*\(\s*duration\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|seconds|秒)?\s*\)\s*=+[ \t*]*$/gim;
-  const marks = [...content.matchAll(header)];
-  const storyEnd = marks.length ? marks[0].index : content.length;
-  const story = content.slice(0, storyEnd).replace(/^[ \t#*]*=+\s*STORY\s*=+[ \t*]*$/im, "").trim();
-  if (action === "story") {
-    if (!story) throw new Error("LLMがストーリー（カット配分表）を返しませんでした。再作成してください。");
-    return { story, cuts: null };
+  const content = text.trim();
+  const part2 = content.indexOf("### Part 2");
+  let story;
+  if (content.includes("### Part 1") && part2 >= 0) story = content.slice(0, part2).replace("### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)", "").replace("### Part 1", "").trim();
+  else { const first = content.search(/(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*1/i); story = (first >= 0 ? content.slice(0, first) : content).trim(); }
+  if (action === "story") return { story: story || content, cuts: null, problems: [] };
+  const header = /(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*(\d+)([^=\n*\]]*)(?:===|\]|\*\*)?\s*(?:```(?:text|markdown)?\s*\n([\s\S]*?)\n```|(?=\n(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*\d+|$(?![\s\S])))/gi;
+  let raw = [];
+  for (const m of content.matchAll(header)) {
+    let body = (m[3] ?? "").trim();
+    if (!body) body = (m[0].match(/```(?:text|markdown)?\s*\n([\s\S]*?)\n```/)?.[1] ?? "").trim();
+    if (body) raw.push({ body, declared: m[2].match(/duration\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:seconds|secs|sec|s|秒)/i)?.[1] });
   }
-  if (marks.length < 2) throw new Error("LLMの返答から2つ以上のカットを読み取れませんでした。再作成してください。");
-  const cuts = marks.map((mark, index) => {
-    if (Number(mark[1]) !== index + 1) throw new Error("LLMのカット番号が連番になっていません。再作成してください。");
-    const prompt = content.slice(mark.index + mark[0].length, marks[index + 1]?.index ?? content.length).trim()
-      .replace(/^(\s*)non-diegetic_music\s*:/im, "$1non_diegetic_music:");
-    const found = [...prompt.matchAll(/^\s*([a-z_]+)\s*:/gim)].map(m => m[1].toLowerCase()).filter(name => SECTIONS.includes(name));
-    if (SECTIONS.some(name => !found.includes(name)) || found.join() !== SECTIONS.join()) {
-      throw new Error(`カット ${index + 1} のPromptに公式の6項目が順番どおり揃っていません。再作成してください。`);
-    }
-    return { prompt, duration_seconds: Number(mark[2]) };
-  });
-  const durations = fitDurations(cuts.map(c => c.duration_seconds), totalSeconds);
+  if (!raw.length) {
+    raw = [...content.matchAll(/```(?:text|markdown)?\s*\n([\s\S]*?)\n```/g)].map(m => m[1].trim())
+      .filter(b => /integrated_multimodal_description|\[Shot|overall_soundscape|subject_definitions/.test(b)).map(body => ({ body }));
+  }
+  if (!raw.length) throw new Error("LLMの返答からカットを読み取れませんでした。再作成してください。");
+  const problems = [];
   let start = 0;
-  return { story, cuts: cuts.map((c, i) => {
-    const prompt = cutTimeline(c.prompt, start, durations[i]);
-    start += c.duration_seconds;
-    return { prompt, duration_seconds: durations[i] };
-  }) };
-}
-
-// Each cut is its own generation: shots restart at [Shot 1] (no timestamp) and times count from the cut start.
-function cutTimeline(prompt, start, length) {
-  const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${(seconds % 60).toFixed(3).padStart(6, "0")}`;
-  const marker = /\[Shot\s+\d+\](\s+At\s+(\d+):(\d+(?:\.\d+)?)(,?))?/g;
-  let count = 0;
-  const body = prompt.replace(/(detailed_description\s*:)([\s\S]*?)(?=^\s*overall_soundscape\s*:)/im, (_, head, text) => head + text.replace(marker, (_, at, minutes, secs, comma) => {
-    count++;
-    if (count === 1 || !at) return `[Shot ${count}]`;
-    let time = Number(minutes) * 60 + Number(secs);
-    if (time >= length) time -= start;
-    return `[Shot ${count}] At ${clock(Math.min(Math.max(time, 0.5), length - 0.5))}${comma}`;
-  }));
-  const shots = Array.from({ length: Math.max(count, 1) }, (_, i) => `[Shot ${i + 1}]`).join(", ");
-  return body.replace(/\(appears in [^)]*\)/g, `(appears in ${shots})`);
+  const cuts = raw.map(({ body, declared }, index) => {
+    const seconds = declared == null ? SCENE_CUT_SECONDS.max : Number(declared);
+    if (declared == null) problems.push(`カット ${index + 1} の秒数が書かれていません（${SCENE_CUT_SECONDS.max}秒として入れました）。`);
+    else if (seconds < SCENE_CUT_SECONDS.min || seconds > SCENE_CUT_SECONDS.max) problems.push(`カット ${index + 1} が${seconds}秒です（1カットは${SCENE_CUT_SECONDS.min}〜${SCENE_CUT_SECONDS.max}秒）。`);
+    const prompt = sceneTimestamps(body.replace(/^(\s*)non-diegetic_music\s*:/im, "$1non_diegetic_music:"), seconds, start);
+    const found = [...prompt.matchAll(/^\s*([a-z_]+)\s*:/gim)].map(m => m[1].toLowerCase()).filter(name => SECTIONS.includes(name));
+    if (found.join() !== SECTIONS.join()) problems.push(`カット ${index + 1} のPromptに公式の6項目が順番どおり揃っていません。`);
+    start += seconds;
+    return { prompt, duration_seconds: seconds };
+  });
+  if (Math.abs(start - totalSeconds) > 1e-9) problems.push(`カット秒数の合計が${start}秒です（指定は${totalSeconds}秒）。`);
+  return { story, cuts, problems };
 }
 
 const WRITING_SYSTEM_PROMPT = [

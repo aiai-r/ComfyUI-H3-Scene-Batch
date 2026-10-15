@@ -106,16 +106,23 @@ export class DirectorLLM {
 
   // Whole-scene R2V over one cut: a single request decides the cuts and writes every prompt.
   async createScene(scene, state, action, totalSeconds, onStory) {
-    const analysis = await this.analyze(scene, undefined, false, state.instruction);
+    await this.analyze(scene, undefined, false, state.instruction);
     const config = this.node.properties.h3_llm;
     const story = action === "prompt" ? state.story : "";
-    const stage = action === "story" ? "story" : "prompt";
-    const graph = sceneGraph(config, scene, totalSeconds, stage, state.instruction, story, analysis);
+    // Each image's saved analysis with the scene-wide Subject numbering.
+    const pictures = referenceDescriptions(scene).filter(r => r.kind === "image");
+    const records = pictures.map(r => ({ label: r.label, ...this.imageRecord(scene.assets[r.asset_index]) }));
+    const images = pictures.map((r, index) => {
+      const before = referenceDefinitions(records.slice(0, index)), through = referenceDefinitions(records.slice(0, index + 1));
+      const asset = scene.assets[r.asset_index];
+      return { number: index + 1, filename: asset.file.split(/[\\/]/).pop(), note: asset.note ?? "", analysis: through.slice(before.length).trim() };
+    });
+    const graph = sceneGraph(config, totalSeconds, state.instruction, story, images);
     graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    const text = await this.execute(graph, stage === "story" ? "ストーリー（カット配分）作成中…" : "カット割りと全カットのPromptを作成中…");
-    const result = readScene(text, totalSeconds, stage);
+    const text = await this.execute(graph, action === "story" ? "ストーリー（カット配分）作成中…" : "カット割りと全カットのPromptを作成中…");
+    const result = readScene(text, totalSeconds, action === "story" ? "story" : "prompt");
     if (action !== "prompt") onStory(result.story);
-    return result.cuts;
+    return result;
   }
 
   async create(plan, scene, selected, state, action, onStory) {

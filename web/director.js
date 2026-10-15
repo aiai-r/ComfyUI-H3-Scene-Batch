@@ -211,7 +211,7 @@ function attachDirector(node) {
           if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("合計生成秒数は正の数を指定してください。");
           if (seconds > SCENE_CUT_SECONDS.max) {
             const sourcePlan = structuredClone(plan), sourceScene = structuredClone(scene);
-            const cuts = await llm.createScene(sourceScene, { instruction: state.instructions.all ?? "", story: state.stories.all ?? "" }, action, seconds,
+            const { cuts, problems } = await llm.createScene(sourceScene, { instruction: state.instructions.all ?? "", story: state.stories.all ?? "" }, action, seconds,
               value => { state.stories.all = value; changed(); });
             collect();
             if (JSON.stringify(scene) !== JSON.stringify(sourceScene) || JSON.stringify(plan) !== JSON.stringify(sourcePlan)) {
@@ -223,6 +223,8 @@ function attachDirector(node) {
             plan = { ...plan, shots: cuts.map((c, index) => ({ id: `cut${index + 1}`, prompt: c.prompt, duration_seconds: c.duration_seconds })) };
             cut = 0; render(); save();
             status.textContent = `${cuts.length}カット（${cuts.map(c => c.duration_seconds).join("・")}秒）を作成し、各カットのPrompt欄に反映しました。`;
+            // Problems are shown with the result in place, and stop the combined action before video generation.
+            if (problems.length) throw new Error("LLMの結果に問題があります（結果は各カットに反映済み）：" + problems.join(" "));
             if (action === "generate" && !llm.cancelled) await queue.generate(structuredClone({ plan, scene }));
             return;
           }
