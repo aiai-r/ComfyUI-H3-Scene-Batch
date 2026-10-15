@@ -509,9 +509,15 @@ function attachDirector(node) {
   function showResult(result, canAdopt = true) {
     resultArea.replaceChildren(); element(resultArea, "strong", "", "完成結果" + (result.duration_seconds != null ? ` · ${result.duration_seconds.toFixed(2)}秒` : ""));
     const video = element(resultArea, "video", "result-video"); video.src = viewUrl(result.video); video.controls = true; video.preload = "metadata";
-    if (canAdopt) button(resultArea, "この結果を採用して保存", async () => {
-      await projectRequest(project.value, "adopt", { prompt_id: result.prompt_id, node_id: result.node_id, title: node.properties.h3_title });
-      status.textContent = `「${project.value}」へ採用保存しました。`; node.properties.h3_project = project.value; changed();
+    const adopted = result.adopted;
+    if (adopted) element(resultArea, "p", "", `保存済み：「${adopted.project}」の${adopted.number}シーン目「${adopted.title}」`);
+    if (canAdopt) button(resultArea, "この結果を採用して保存",async () => {
+      const saved = await projectRequest(project.value, "adopt", { prompt_id: result.prompt_id, node_id: result.node_id, title: node.properties.h3_title });
+      result.adopted = { project: project.value, number: saved.number, title: saved.title };
+      const where = `「${project.value}」の${saved.number}シーン目「${saved.title}」`;
+      showResult(result, canAdopt);
+      status.textContent = saved.existing ? `この結果は${where}として保存済みです。` : `${where}として採用保存しました。`;
+      node.properties.h3_project = project.value; changed();
     });
     element(resultArea, "p", "muted", "保存対象はこの動画を生成した時点のPrompt・seed・使用素材です。");
   }

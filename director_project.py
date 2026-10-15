@@ -270,7 +270,11 @@ def project_action(data, queue):
         if action == 'load':
             return load_record(root, data['id'])
         if action == 'adopt':
-            return {'id': adopt(root, queue, data['prompt_id'], data['node_id'], data.get('title', ''))}
+            before = {s['id'] for s in records(root)}
+            identity = adopt(root, queue, data['prompt_id'], data['node_id'], data.get('title', ''))
+            items = records(root)
+            number = next(i for i, s in enumerate(items, 1) if s['id'] == identity)
+            return {'id': identity, 'number': number, 'title': items[number - 1]['title'], 'existing': identity in before}
         state = refresh_batch(root, queue)
         if action == 'status':
             return {'batch': state}
