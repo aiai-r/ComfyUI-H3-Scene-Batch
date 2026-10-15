@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { readPlan, updateCut } from "./web/director_plan.js";
-import { sceneAssets, referenceDescriptions, applyDraft, draftGraph, readDraft, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./web/director_llm.js";
+import { sceneAssets, referenceDescriptions, applyDraft, draftGraph, readDraft, sceneGraph, readScene, SCENE_CUT_SECONDS, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./web/director_llm.js";
 
 if (!process.env.H3_DOM_MODULE) {
   console.log("Director UI DOM check skipped: set H3_DOM_MODULE to linkedom/esm/index.js.");
@@ -26,7 +26,7 @@ const llmCalls = [], history = new Map();
 const projectCalls = [];
 const batchCalls = [];
 let libraryData = { scenes: [], batch: null, directory: "test" };
-let promptOutput = null, onPrompt = () => {};
+let promptOutput = null, sceneOutput = null, onPrompt = () => {};
 const app = { registerExtension: value => { extension = value; } };
 const api = { apiURL: value => value, addEventListener() {}, removeEventListener() {},
   async fetchApi(path, request) {
@@ -38,9 +38,13 @@ const api = { apiURL: value => value, addEventListener() {}, removeEventListener
     if (path.startsWith('/history/')) { const id = path.split('/').pop(); return { ok: true, json: async () => ({ [id]: history.get(id) }) }; }
     if (path === '/prompt') {
       const graph = JSON.parse(request.body).prompt, data = JSON.parse(graph.writer.inputs.custom_prompt);
-      const stage = graph.images ? 'analysis' : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
-      llmCalls.push({ stage, data });
+      const stage = graph.images ? 'analysis' : data.total_seconds != null ? 'scene'
+        : graph.writer.inputs.system_prompt.includes('Return a concise editable story') ? 'story' : 'prompt';
+      llmCalls.push({ stage, data, system: graph.writer.inputs.system_prompt, parameters: graph.parameters.inputs });
+      const sections = body => ['subject_definitions:', '<Subject 1> is the referenced person.', '', 'summary:', body, '', 'retention_analysis:', '<Subject 1>: fully_preserved.', '',
+        'detailed_description:', body, '', 'overall_soundscape:', 'Room tone.', '', 'non_diegetic_music:', 'N/A'].join('\n');
       const text = stage === 'analysis' ? 'A person stands in a garden.' : stage === 'story' ? '庭を歩いて振り返る'
+        : stage === 'scene' ? sceneOutput ?? ['=== STORY ===', '| 1 | 歩く |', '| 2 | 振り返る |', '', '=== CUT 1 (duration: 15s) ===', sections('Walk'), '', '=== CUT 2 (duration: 12s) ===', sections('Turn')].join('\n')
         : promptOutput ?? JSON.stringify({ shots: data.cuts.filter(c => data.selected_cut == null || c.id === JSON.parse(node.widgets.find(w => w.name === 'plan_json').value).shots[data.selected_cut - 1].id).map(c => ({ id: c.id, prompt: 'Generated ' + c.id, start_state: 'Start ' + c.id, end_state: 'End ' + c.id })) });
       if (stage === 'prompt') onPrompt();
       const id = String(llmCalls.length); history.set(id, { status: { completed: true }, outputs: { result: { text: [text] } } });
@@ -77,11 +81,11 @@ class Node {
 }
 const source = (await readFile(new URL("./web/director.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replace("import.meta.url", JSON.stringify(new URL("./web/director.js", import.meta.url).href));
 const llmSource = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "imageAnalysisKey", llmSource + '\nreturn DirectorLLM;')(api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey);
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneGraph", "readScene", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "imageAnalysisKey", llmSource + '\nreturn DirectorLLM;')(api, draftGraph, readDraft, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey);
 const queueSource = (await readFile(new URL("./web/director_queue.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 const batchProgress = new Function(queueSource + '\nreturn batchProgress;')();
-new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", "batchProgress", source)(
-  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, LLM, () => { draftOpened = true; }, Queue,
+new Function("app", "api", "document", "readPlan", "updateCut", "sceneAssets", "referenceDescriptions", "applyDraft", "SCENE_CUT_SECONDS", "DirectorLLM", "openLLMSettings", "DirectorQueue", "projectRequest", "confirm", "batchProgress", source)(
+  app, api, document, readPlan, updateCut, sceneAssets, referenceDescriptions, applyDraft, SCENE_CUT_SECONDS, LLM, () => { draftOpened = true; }, Queue,
   async (project, action) => {
     projectCalls.push({ project, action });
     return action === 'load' ? { title: 'Cloud scene', plan, scene: { mode: 'T2V', assets: [] }, video: null } : libraryData;
@@ -237,8 +241,7 @@ assert.ok(llmCalls.at(-1).data.image_analysis.includes('手動で確認した人
 assert.equal(field('カット 2のストーリー').value, '庭を歩いて振り返る');
 const applied = JSON.parse(node.widgets.find(w => w.name === 'plan_json').value);
 assert.deepEqual(applied.shots[0], prior.shots[0]);
-assert.ok(applied.shots[1].prompt.startsWith('subject_definitions:'));
-assert.ok(applied.shots[1].prompt.endsWith('detailed_description:\nGenerated ' + applied.shots[1].id));
+assert.equal(applied.shots[1].prompt, 'Generated ' + applied.shots[1].id, 'The LLM prompt is kept as written');
 assert.equal(field('カット 2 のPrompt').value, applied.shots[1].prompt);
 assert.equal(byText('草案を適用'), undefined);
 assert.equal(byText('草案を破棄'), undefined);
@@ -270,15 +273,15 @@ planWidget.value = JSON.stringify({ prompt_prefix: '', shots: [
 node.onConfigure();
 await root.querySelector('[aria-label="カット 1"]').onclick();
 await byText('Prompt作成').onclick(); assertHealthy();
-assert.ok(field('カット 1 のPrompt').value.endsWith('detailed_description:\nGenerated cut2'));
+assert.equal(field('カット 1 のPrompt').value, 'Generated cut2');
 const firstGenerated = field('カット 1 のPrompt').value;
 await root.querySelector('[aria-label="カット 2"]').onclick();
 await byText('Prompt作成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).data.previous_prompt, firstGenerated);
 assert.equal(llmCalls.at(-1).data.previous_end_state, 'End cut2');
-assert.ok(field('カット 2 のPrompt').value.endsWith('detailed_description:\nGenerated cut3'));
+assert.equal(field('カット 2 のPrompt').value, 'Generated cut3');
 const generated = JSON.parse(planWidget.serializeValue());
-assert.deepEqual(generated.shots.map(s => s.prompt.split('detailed_description:\n')[1]), ['Generated cut2', 'Generated cut3']);
+assert.deepEqual(generated.shots.map(s => s.prompt), ['Generated cut2', 'Generated cut3']);
 await byText('このシーンを生成').onclick(); assertHealthy();
 assert.deepEqual(queuedRecord.plan, generated);
 node.onConfigure(); assertHealthy();
@@ -290,7 +293,7 @@ for (const output of [
 ]) {
   promptOutput = output;
   await byText('Prompt作成').onclick(); assertHealthy();
-  assert.ok(field('カット 2 のPrompt').value.endsWith('detailed_description:\nRecovered second cut'));
+  assert.equal(field('カット 2 のPrompt').value, 'Recovered second cut');
   const recovered = JSON.parse(planWidget.serializeValue());
   assert.deepEqual(recovered.shots[0], generated.shots[0]);
   assert.equal(recovered.shots[1].id, 'cut3');
@@ -313,16 +316,44 @@ onPrompt = () => {};
 await byText('ストーリー作成').onclick(); assertHealthy();
 assert.equal(JSON.parse(planWidget.serializeValue()).shots[1].prompt, 'Edited while generating', 'Story-only generation preserves prompts');
 const bulk = [...root.querySelectorAll('details')].find(e => e.querySelector('summary')?.textContent === '補助操作：全カットまとめて作成');
+assert.equal(field('合計生成秒数（overlap込み）').value, '30', 'Total defaults to the current cut seconds');
+const storyBefore = field('全カットのストーリー').value;
 await [...bulk.querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
-assert.deepEqual(llmCalls.slice(-2).map(c => c.data.selected_cut), [1, 2]);
-assert.deepEqual(JSON.parse(planWidget.serializeValue()).shots.map(s => s.prompt.split('detailed_description:\n')[1]), ['Generated cut2', 'Generated cut3']);
+assert.equal(llmCalls.at(-1).stage, 'scene', 'One request plans every cut');
+assert.equal(llmCalls.at(-1).data.total_seconds, 30);
+assert.match(llmCalls.at(-1).system, /# Full-Reference Mode Rewrite Output Format Guide/);
+assert.ok(llmCalls.at(-1).parameters.max_tokens >= 12288, 'Several complete prompts need a larger output limit');
+let planned = JSON.parse(planWidget.serializeValue());
+assert.deepEqual(planned.shots.map(s => [s.id, s.duration_seconds]), [['cut1', 15], ['cut2', 15]], 'LLM cut lengths are fitted to the total');
+assert.ok(planned.shots.every(s => s.prompt.startsWith('subject_definitions:') && s.prompt.endsWith('non_diegetic_music:\nN/A')));
+assert.equal(field('全カットのストーリー').value, storyBefore, 'Prompt-only creation keeps the story');
 assert.equal(root.querySelectorAll('.cut-writing button').length, 7, 'Multiple cuts expose the combined action only in the bulk section');
-field('カット 2 のPrompt').value = 'Old prompt with speech'; field('カット 2 のPrompt').oninput();
+field('合計生成秒数（overlap込み）').value = '25'; field('合計生成秒数（overlap込み）').oninput();
 queuedRecord = null;
 await byText('ストーリー→Prompt→生成').onclick(); assertHealthy();
-assert.deepEqual(llmCalls.slice(-3).map(c => c.stage), ['story', 'prompt', 'prompt']);
-assert.deepEqual(llmCalls.slice(-3).map(c => c.data.selected_cut), [null, 1, 2]);
-assert.deepEqual(queuedRecord.plan, JSON.parse(planWidget.serializeValue()), 'Bulk generation uses the newly applied prompts');
+assert.equal(llmCalls.at(-1).stage, 'scene');
+assert.equal(llmCalls.at(-1).data.total_seconds, 25);
+planned = JSON.parse(planWidget.serializeValue());
+assert.deepEqual(planned.shots.map(s => s.duration_seconds), [14, 11], 'Cut lengths are adjusted to the new total');
+assert.match(field('全カットのストーリー').value, /歩く/, 'The combined action stores the allocation as the story');
+assert.deepEqual(queuedRecord.plan, planned, 'Bulk generation uses the newly applied prompts');
+sceneOutput = '=== CUT 1 (duration: 15s) ===\nsubject_definitions:\nA\n\n=== CUT 2 (duration: 15s) ===\ndetailed_description:\nB';
+const beforeInvalid = planWidget.serializeValue();
+queuedRecord = null;
+await byText('ストーリー→Prompt→生成').onclick();
+assert.match(root.querySelector('[role="alert"]').textContent, /6項目/);
+assert.equal(planWidget.serializeValue(), beforeInvalid, 'Incomplete cut prompts do not replace cuts');
+assert.equal(queuedRecord, null, 'Incomplete cut prompts do not start video generation');
+sceneOutput = null;
+const findBulk = () => [...root.querySelectorAll('details')].find(e => e.querySelector('summary')?.textContent === '補助操作：全カットまとめて作成');
+field('合計生成秒数（overlap込み）').value = '10'; field('合計生成秒数（overlap込み）').oninput();
+await [...findBulk().querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
+planned = JSON.parse(planWidget.serializeValue());
+assert.deepEqual(planned.shots.map(s => [s.id, s.duration_seconds]), [['cut1', 10]], 'Up to 15 seconds makes one cut');
+assert.equal(llmCalls.at(-1).stage, 'prompt', 'One cut uses the single-cut prompt request');
+assert.equal(llmCalls.at(-1).data.selected_cut, 1);
+field('合計生成秒数（overlap込み）').value = '30'; field('合計生成秒数（overlap込み）').oninput();
+await [...findBulk().querySelectorAll('button')].find(b => b.textContent === 'Prompt作成').onclick(); assertHealthy();
 const multiplePlan = planWidget.serializeValue();
 const singlePlan = JSON.parse(multiplePlan); singlePlan.shots = singlePlan.shots.slice(0, 1);
 planWidget.value = JSON.stringify(singlePlan); node.onConfigure();

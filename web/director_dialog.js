@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
+import { draftGraph, readDraft, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
 
 export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
@@ -102,6 +102,20 @@ export class DirectorLLM {
       .map(r => ({ label: r.label, ...this.imageRecord(scene.assets[r.asset_index]) }));
     return scene.mode === "R2V" ? referenceDefinitions(references)
       : references.map(r => `${r.label}\n${r.text.replace(/<Subject\s+\d+>/g, "The referenced subject").replace(/<Picture(?:\s+\d+)?>/g, r.label)}`).join("\n\n");
+  }
+
+  // Whole-scene R2V over one cut: a single request decides the cuts and writes every prompt.
+  async createScene(scene, state, action, totalSeconds, onStory) {
+    const analysis = await this.analyze(scene, undefined, false, state.instruction);
+    const config = this.node.properties.h3_llm;
+    const story = action === "prompt" ? state.story : "";
+    const stage = action === "story" ? "story" : "prompt";
+    const graph = sceneGraph(config, scene, totalSeconds, stage, state.instruction, story, analysis);
+    graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    const text = await this.execute(graph, stage === "story" ? "ストーリー（カット配分）作成中…" : "カット割りと全カットのPromptを作成中…");
+    const result = readScene(text, totalSeconds, stage);
+    if (action !== "prompt") onStory(result.story);
+    return result.cuts;
   }
 
   async create(plan, scene, selected, state, action, onStory) {

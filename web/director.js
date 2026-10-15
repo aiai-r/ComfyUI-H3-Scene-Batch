@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { readPlan, updateCut } from "./director_plan.js";
-import { sceneAssets, referenceDescriptions, applyDraft } from "./director_llm.js";
+import { sceneAssets, referenceDescriptions, applyDraft, SCENE_CUT_SECONDS } from "./director_llm.js";
 import { DirectorLLM, openLLMSettings } from "./director_dialog.js";
 import { DirectorQueue, projectRequest, batchProgress } from "./director_queue.js";
 
@@ -193,11 +193,44 @@ function attachDirector(node) {
       previous.onchange = () => { state.previous[scope] = previous.checked; changed(); };
       element(section, "div", "muted", `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
     }
+    const wholeScene = selected === null && scene.mode === "R2V";
+    let total = null;
+    if (wholeScene) {
+      const sum = plan.shots.reduce((value, shot) => value + Number(shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15), 0);
+      total = input(section, "合計生成秒数（overlap込み）", state.total_seconds ?? sum); total.style.width = "160px";
+      total.oninput = () => { state.total_seconds = total.value; changed(); };
+      element(section, "div", "muted", `${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
+    }
     const buttons = element(section, "div", "row");
     const actions = [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]];
     if (selected === null || plan.shots.length === 1) actions.push(["ストーリー→Prompt→生成", "generate"]);
     for (const [text, action] of actions) {
       button(buttons, text, () => llmTask(async () => {
+        if (wholeScene) {
+          const seconds = Number(total.value);
+          if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("合計生成秒数は正の数を指定してください。");
+          if (seconds > SCENE_CUT_SECONDS.max) {
+            const sourcePlan = structuredClone(plan), sourceScene = structuredClone(scene);
+            const cuts = await llm.createScene(sourceScene, { instruction: state.instructions.all ?? "", story: state.stories.all ?? "" }, action, seconds,
+              value => { state.stories.all = value; changed(); });
+            collect();
+            if (JSON.stringify(scene) !== JSON.stringify(sourceScene) || JSON.stringify(plan) !== JSON.stringify(sourcePlan)) {
+              throw new Error("処理中に素材・カットが変わりました。Promptを再作成してください。");
+            }
+            if (!cuts) { status.textContent = "ストーリー（カット配分表）を作成しました。ストーリー欄で確認・編集できます。"; return; }
+            // The LLM's cut list replaces the old cuts, so drop their per-cut drafts.
+            for (const values of [state.instructions, state.stories, state.previous]) for (const key of Object.keys(values)) if (key.startsWith("cut:")) delete values[key];
+            plan = { ...plan, shots: cuts.map((c, index) => ({ id: `cut${index + 1}`, prompt: c.prompt, duration_seconds: c.duration_seconds })) };
+            cut = 0; render(); save();
+            status.textContent = `${cuts.length}カット（${cuts.map(c => c.duration_seconds).join("・")}秒）を作成し、各カットのPrompt欄に反映しました。`;
+            if (action === "generate" && !llm.cancelled) await queue.generate(structuredClone({ plan, scene }));
+            return;
+          }
+          if (plan.shots.length !== 1 || plan.shots[0].duration_seconds !== seconds) {
+            const { length, frames, ...first } = plan.shots[0];
+            plan = { ...plan, shots: [{ ...first, duration_seconds: seconds }] }; cut = 0; save(); render();
+          }
+        }
         const baseline = structuredClone(plan), sourceScene = structuredClone(scene);
         const prompts = await llm.create(baseline, sourceScene, selected, {
           instruction: state.instructions[scope] ?? "", story: state.stories[scope] ?? "",
