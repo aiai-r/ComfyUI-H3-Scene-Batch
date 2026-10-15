@@ -115,7 +115,9 @@ export class DirectorLLM {
     const images = pictures.map((r, index) => {
       const before = referenceDefinitions(records.slice(0, index)), through = referenceDefinitions(records.slice(0, index + 1));
       const asset = scene.assets[r.asset_index];
-      return { number: index + 1, filename: asset.file.split(/[\\/]/).pop(), note: asset.note ?? "", analysis: through.slice(before.length).trim() };
+      const analysis = through.slice(before.length).trim();
+      const subjects = [...new Set([...analysis.matchAll(/<Subject (\d+)>/g)].map(m => Number(m[1])))];
+      return { number: index + 1, filename: asset.file.split(/[\\/]/).pop(), note: asset.note ?? "", analysis, subjects };
     });
     const graph = sceneGraph(config, totalSeconds, state.instruction, story, images);
     graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];

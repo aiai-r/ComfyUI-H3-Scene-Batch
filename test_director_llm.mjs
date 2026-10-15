@@ -246,4 +246,9 @@ assert.match(request, /- <Picture 1> \(woman\.png\): Assigned Role = <Picture 1>
 assert.match(request, /USER DIRECTION:\n<Picture 1>は<Audio 1>を使う。/);
 assert.match(request, /- <Audio 1>: declared by the user; its contents were not inspected/);
 assert.match(request, /8\. \*\*Complete prompt in every clip\*\*/);
+const roles = scenePrompt(60, '画像3は音声2を使う。', '', [{ number: 3, filename: 'man.png', note: '', analysis: '<Subject 3> is the man.', subjects: [3] }]);
+assert.match(roles, /- <Picture 3> \(man\.png\): Assigned Role = <Subject 3> Reference;/, 'Each picture states its Subject, as short_storygen_h3 subject references do');
+assert.match(roles, /- <Picture 3>: attached as a reference asset; label it <Subject 3> in the generated prompt\./);
+assert.match(roles, /<Audio N> is the voice-timbre reference for <Subject N> \(Sx\)\./, 'The clip example carries the voice-reference line');
+assert.match(roles, /even when nobody speaks in that clip/);
 console.log('Whole-scene plan: short_storygen_h3 request, kept cut lengths, reported problems and per-cut timelines passed.');

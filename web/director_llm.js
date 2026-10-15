@@ -72,14 +72,17 @@ export function normalizeMediaReferences(text) {
   return { text: normalized, found };
 }
 
-function mediaManifest(found, pictures) {
+function mediaManifest(found, images) {
+  const pictures = images.map(i => i.number);
   const allowed = new Set([...found, ...pictures.map(n => mediaTag("Picture", n))]);
   if (!allowed.size) return "VALIDATED MEDIA REFERENCE INVENTORY: none. Do not introduce <Picture N>, <Audio N>, or <Video N> references.";
   const lines = ["VALIDATED MEDIA REFERENCE INVENTORY:", "Use these exact native MiniMax H3 labels. Preserve the user's stated purpose for each asset. Do not invent another media reference."];
   for (const kind of ["Picture", "Audio", "Video"]) for (let number = 1; number <= MEDIA_LIMITS[kind]; number++) {
     const tag = `<${kind} ${number}>`;
     if (!allowed.has(tag)) continue;
-    lines.push(`- ${tag}: ${kind === "Picture" && pictures.includes(number) ? "its saved visual analysis is provided separately" : "declared by the user; its contents were not inspected"}`);
+    const labels = kind === "Picture" ? (images.find(i => i.number === number)?.subjects ?? []).map(n => `<Subject ${n}>`).join(", ") : "";
+    lines.push(`- ${tag}: ${labels ? `attached as a reference asset; label it ${labels} in the generated prompt. Its saved visual analysis is provided separately`
+      : kind === "Picture" && pictures.includes(number) ? "its saved visual analysis is provided separately" : "declared by the user; its contents were not inspected"}`);
   }
   return lines.join("\n");
 }
@@ -92,10 +95,10 @@ export function scenePrompt(totalSeconds, instruction, story, images) {
   const { min, max } = SCENE_CUT_SECONDS;
   const minStr = seconds2(min), maxStr = seconds2(max), totalStr = seconds2(totalSeconds);
   const { text, found } = normalizeMediaReferences([instruction, story].filter(s => s.trim()).join("\n\nAPPROVED STORY ALLOCATION:\n"));
-  const userInstruction = `${mediaManifest(found, images.map(i => i.number))}\n\nUSER DIRECTION:\n${text.trim()}`;
-  const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = <Picture ${i.number}> Reference; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
+  const userInstruction = `${mediaManifest(found, images)}\n\nUSER DIRECTION:\n${text.trim()}`;
+  const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = ${i.subjects?.length ? `${i.subjects.map(n => `<Subject ${n}>`).join(", ")} Reference` : `<Picture ${i.number}> Reference`}; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
     : "No reference images supplied.";
-  const sections = "subject_definitions:\n...\n\nsummary:\n...\n\nretention_analysis:\n...\n\ndetailed_description:\n[Shot 1] ...\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
+  const sections = "subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\nretention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\ndetailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Japanese] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
   return `You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
 Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
 
@@ -125,7 +128,7 @@ CLIP PLANNING RULES (MANDATORY):
 5. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
 6. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
 7. **Dialogue**: wrap spoken dialogue in \`<d>[Japanese] ...</d>\` with speaker ID \`(S1)\`.
-8. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and voice-reference <Audio N> line used in that clip. Never shorten later clips to only detailed_description.
+8. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line "<Audio N> is the voice-timbre reference for <Subject N> (Sx)." even when nobody speaks in that clip, with the matching "<Audio N>: reference - ..." line in retention_analysis. Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.
 
 =======================================================
 OUTPUT FORMAT:
