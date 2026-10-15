@@ -223,7 +223,6 @@ export function readScene(text, totalSeconds, action) {
     start += seconds;
     return { prompt, duration_seconds: seconds };
   });
-  if (Math.abs(start - totalSeconds) > 1e-9) problems.push(`カット秒数の合計が${start}秒です（指定は${totalSeconds}秒）。`);
   return { story, cuts, problems };
 }
 

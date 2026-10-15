@@ -237,7 +237,7 @@ assert.deepEqual(planned.problems, ['カット 3 が20秒です（1カットは4
 assert.match(planned.cuts[0].prompt, /\[Shot 2\] At 00:08\.000, he watches\./, 'Cut-local times stay unchanged');
 assert.match(planned.cuts[1].prompt, /\[Shot 2\] At 00:04\.500, he speaks\./, 'Scene-wide times restart at the cut, as in short_storygen_h3');
 assert.deepEqual(readScene(sceneReply.replace('summary:\nOne cut.\n\n', ''), 45, 'all').problems.filter(p => p.includes('6項目')).length, 1);
-assert.match(readScene(sceneReply.replace('(duration: 20s)', '(duration: 15s)'), 45, 'all').problems[0], /合計が40秒/);
+assert.deepEqual(readScene(sceneReply.replace('(duration: 20s)', '(duration: 15s)'), 45, 'all').problems, [], 'The requested total is a target; the LLM total is accepted');
 assert.equal(readScene(sceneReply, 45, 'story').story, '| Clip 1 | 15秒 | 勉強 |');
 assert.deepEqual([...normalizeMediaReferences('画像1は音声1、画像3は音声2').found], ['<Picture 1>', '<Audio 1>', '<Picture 3>', '<Audio 2>']);
 const request = scenePrompt(60, '画像1は音声1を使う。', '', [{ number: 1, filename: 'woman.png', note: '', analysis: '<Subject 1> is the woman shown in <Picture 1>.' }]);
