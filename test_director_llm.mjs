@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, fitDurations } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -222,3 +222,21 @@ console.log('Reference definitions: image-order labels, multiview and storyboard
 const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[0],label:'<Picture 2>',key:'same image'}]);
 assert.match(duplicate, /<Subject 1> is one woman in <Picture 1> and <Picture 2>/);
 assert.doesNotMatch(duplicate, /<Subject 2>/, 'Identical image inputs do not create another person');
+
+const cutPrompt = (body, appears) => ['subject_definitions:', '<Subject 1> is the woman.', '', 'summary:', 'One cut.', '', 'retention_analysis:', `<Subject 1> (appears in ${appears}): fully_preserved.`, '',
+  'detailed_description:', body, '', 'overall_soundscape:', 'Room tone.', '', 'non_diegetic_music:', 'N/A'].join('\n');
+const sceneReply = ['=== STORY ===', '| 1 | 15秒 | 勉強 |', '',
+  '=== CUT 1 (duration: 15s) ===', cutPrompt('[Shot 1] She writes. [Shot 2] At 00:08.000, he watches.', '[Shot 1], [Shot 2]'),
+  '=== CUT 2 (duration: 10s) ===', cutPrompt('[Shot 1] At 00:15.000, close-up. [Shot 2] At 00:19.500, he speaks.', '[Shot 1], [Shot 2], [Shot 3], [Shot 4]'),
+  '=== CUT 3 (duration: 20s) ===', cutPrompt('[Shot 3] At 00:25.000, he reaches. [Shot 4] At 00:40.000, she smiles.', '[Shot 3]')].join('\n');
+const planned = readScene(sceneReply, 45, 'all');
+assert.match(planned.story, /勉強/);
+assert.deepEqual(planned.cuts.map(c => c.duration_seconds), [15, 15, 15], 'Cuts over 15 seconds are fitted to the total');
+assert.match(planned.cuts[0].prompt, /\[Shot 1\] She writes\. \[Shot 2\] At 00:08\.000, he watches\./, 'Cut-local times stay unchanged');
+assert.match(planned.cuts[1].prompt, /\[Shot 1\] close-up\. \[Shot 2\] At 00:04\.500, he speaks\./, 'Scene-wide times restart at the cut');
+assert.match(planned.cuts[2].prompt, /\[Shot 1\] he reaches\. \[Shot 2\] At 00:14\.500, she smiles\./, 'Shot numbers restart and stay inside the cut');
+for (const c of planned.cuts) assert.match(c.prompt, /\(appears in \[Shot 1\], \[Shot 2\]\)/);
+assert.equal(readScene('=== STORY ===\n| 1 | 歩く |', 45, 'story').story, '| 1 | 歩く |');
+assert.throws(() => readScene(sceneReply.replace('summary:\nOne cut.\n\n', ''), 45, 'all'), /6項目/);
+assert.throws(() => fitDurations([15, 15], 45), /カット数/);
+console.log('Whole-scene plan: cut blocks, fitted lengths and per-cut shot timelines passed.');

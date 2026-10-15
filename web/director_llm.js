@@ -79,11 +79,11 @@ function sceneSystemPrompt(action, totalSeconds, hasStory) {
       : "Read the whole instruction and decide yourself how many cuts the scene needs and how long each cut is.",
     "",
     "CUT PLANNING RULES (MANDATORY):",
-    `1. Every cut is a separate MiniMax H3 generation, so each cut lasts between ${min} and ${max} seconds, in whole or half seconds.`,
-    `2. The cut lengths add up to exactly ${totalSeconds} seconds.`,
+    `1. Every cut is a separate MiniMax H3 generation, so each cut lasts between ${min} and ${max} seconds, in whole or half seconds. No cut may be longer than ${max} seconds; when events need more time, split them into more cuts.`,
+    `2. The cut lengths add up to exactly ${totalSeconds} seconds, so the scene needs at least ${Math.ceil(totalSeconds / max)} cuts. Check the sum before writing.`,
     "3. Match each cut's length to what happens inside it; do not give every cut the same length. A short beat becomes an extra [Shot] inside a neighbouring cut instead of a cut of its own.",
     "4. Cover every requested event in order without omissions or duplicates. Do not add events, dialogue or sounds the user did not ask for.",
-    "5. Each cut has its own timeline: timestamps inside a cut start at 00:00.000 and stay within that cut's own length.",
+    "5. Each cut has its own timeline starting at 0 seconds. The first shot of EVERY cut is [Shot 1] with no timestamp, and later shots inside that cut count from 00:00.000 of that cut and stay within its own length. Never continue shot numbers or the scene-wide clock from earlier cuts. Wrong in CUT 2: [Shot 2] At 00:15.000, ... Right in CUT 2: [Shot 1] ... then [Shot 2] At 00:04.000, ...",
     "6. Every cut after the first continues the previous cut's unfinished motion, camera direction, pose, background and sound. Begin its detailed_description with wording like \"Continue the unfinished [action/camera movement] from the previous cut without resetting stride or pose. Keep the incoming camera direction, lighting and ambience.\" End every non-final cut while an action is still in progress.",
     "7. Each cut is generated alone, so EVERY cut prompt must be complete: all six sections in order, and subject_definitions repeats every subject and every voice-reference <Audio N> line used by the scene. Never shorten later cuts to only detailed_description.",
     "8. The summary of a cut describes only that cut, not the rest of the scene.",
@@ -102,8 +102,8 @@ export function sceneGraph(config, scene, totalSeconds, action, instruction, sto
   const hasStory = action !== "story" && Boolean(story.trim());
   const stage = action === "story" ? config.story : config.prompt;
   const parameters = JSON.parse(JSON.stringify(stage.parameters));
-  // Several complete six-section prompts do not fit the single-cut token limit.
-  parameters.max_tokens = Math.max(parameters.max_tokens ?? 0, action === "story" ? 4096 : 12288);
+  // Several complete six-section prompts need the llama-cpp node's maximum output (4096).
+  parameters.max_tokens = 4096;
   const request = { mode: scene.mode, total_seconds: totalSeconds, instruction, story: hasStory ? story : "", image_analysis: analysis,
     references: referenceDescriptions(scene).map(r => ({ ...r, image_attached: false })) };
   return {
@@ -159,7 +159,28 @@ export function readScene(text, totalSeconds, action) {
     return { prompt, duration_seconds: Number(mark[2]) };
   });
   const durations = fitDurations(cuts.map(c => c.duration_seconds), totalSeconds);
-  return { story, cuts: cuts.map((c, i) => ({ ...c, duration_seconds: durations[i] })) };
+  let start = 0;
+  return { story, cuts: cuts.map((c, i) => {
+    const prompt = cutTimeline(c.prompt, start, durations[i]);
+    start += c.duration_seconds;
+    return { prompt, duration_seconds: durations[i] };
+  }) };
+}
+
+// Each cut is its own generation: shots restart at [Shot 1] (no timestamp) and times count from the cut start.
+function cutTimeline(prompt, start, length) {
+  const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${(seconds % 60).toFixed(3).padStart(6, "0")}`;
+  const marker = /\[Shot\s+\d+\](\s+At\s+(\d+):(\d+(?:\.\d+)?)(,?))?/g;
+  let count = 0;
+  const body = prompt.replace(/(detailed_description\s*:)([\s\S]*?)(?=^\s*overall_soundscape\s*:)/im, (_, head, text) => head + text.replace(marker, (_, at, minutes, secs, comma) => {
+    count++;
+    if (count === 1 || !at) return `[Shot ${count}]`;
+    let time = Number(minutes) * 60 + Number(secs);
+    if (time >= length) time -= start;
+    return `[Shot ${count}] At ${clock(Math.min(Math.max(time, 0.5), length - 0.5))}${comma}`;
+  }));
+  const shots = Array.from({ length: Math.max(count, 1) }, (_, i) => `[Shot ${i + 1}]`).join(", ");
+  return body.replace(/\(appears in [^)]*\)/g, `(appears in ${shots})`);
 }
 
 const WRITING_SYSTEM_PROMPT = [
