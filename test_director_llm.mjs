@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, includeReferenceDefinitions, SYSTEM_PROMPTS } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -37,16 +37,16 @@ assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).scene_story, "Scene s
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[0].prompt, "Original A");
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).selected_cut, 2);
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).previous_prompt, "Original A");
-assert.match(graph.writer.inputs.system_prompt, /Return ONLY JSON: \{"shots":\[\{"prompt":/);
+assert.match(graph.writer.inputs.system_prompt, /Return only the six plain-text sections/);
+assert.match(graph.writer.inputs.system_prompt, /# Full-Reference Mode Rewrite Output Format Guide/);
 const threeCuts = { shots: [{ id: "a", prompt: "Walk to the gate" },
   { id: "b", prompt: "Open the gate", end_state: "Woman holds the open gate with her right hand" }, { id: "c", prompt: "" }] };
 const third = draftGraph(config, scene, threeCuts, "prompt", "Enter the garden", "", 2);
 assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_prompt, "Open the gate");
 assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_end_state, threeCuts.shots[1].end_state);
-assert.match(third.writer.inputs.system_prompt, /prompt field itself, not only start_state/);
+assert.match(third.writer.inputs.system_prompt, /continues directly from that ending/);
 const first = draftGraph(config, scene, threeCuts, "prompt", "Start", "", 0);
 assert.equal(JSON.parse(first.writer.inputs.custom_prompt).previous_prompt, undefined);
-assert.match(first.writer.inputs.system_prompt, /self-contained H3 prompt/);
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[1].prompt, undefined, "Only earlier cuts carry generated text as context");
 const endpointScene = { mode: "L2V", assets: [{ kind: "image", role: "last", file: "last.png" }] };
 const stalePlan = { shots: [{ id: "cut2", duration_seconds: 15, prompt: "She remains seated throughout.", start_state: "Already seated", end_state: "Still seated" }] };
@@ -85,7 +85,7 @@ for (const selected of [0, 1]) {
   assert.equal(request.include_previous, false);
   assert.equal(request.previous_prompt, undefined);
   assert.equal(request.previous_end_state, undefined);
-  assert.match(solo.writer.inputs.system_prompt, /self-contained H3 prompt/);
+  assert.match(draftGraph(config, { ...scene, mode: "T2V" }, plan, "prompt", "指示", "", selected, "", "前カットの話", false).writer.inputs.system_prompt, /self-contained H3 prompt/);
 }
 const analysis = draftGraph(config, scene, plan, "analysis", "画像1は同一人物の三面図", "Do not send the story", null);
 assert.deepEqual(analysis.writer.inputs.images, ["images", 0]);
@@ -101,7 +101,7 @@ for (const action of ["story", "prompt"]) for (const selected of [null, 1]) {
   assert.equal(request.selected_cut, selected === null ? null : 2);
   assert.equal(output.images, undefined);
   assert.equal(request.cuts.length, 2, "Keep neighboring cuts as context");
-  assert.equal(output.writer.inputs.system_prompt.includes("Return only the selected cut"), selected !== null);
+  if (action === "story") assert.equal(output.writer.inputs.system_prompt.includes("Return only the selected cut"), selected !== null);
 }
 const bytes = text => new TextEncoder().encode(text).buffer;
 const key = await imageAnalysisKey(scene, async path => {
@@ -201,49 +201,22 @@ assert.match(referenceDefinitions([refs[2], refs[0]].map((r,i) => ({...r,label:`
 const storyboard = '<Picture> is a storyboard: follow panels left to right, then top to bottom.';
 assert.equal(referenceDefinitions([{label:'<Picture 2>',text:storyboard}]), storyboard.replace('<Picture>','<Picture 2>'));
 assert.match(referenceDefinitions([{label:'<Picture 1>',text:'<Subject 1> is Alice in <Picture>. <Subject 2> is Bob in <Picture>. <Subject 1> wears red.'}, refs[1]]), /<Subject 3> is the room/);
-const finalPrompt = includeReferenceDefinitions('A woman sits at the desk.', definitions);
-assert.ok(finalPrompt.startsWith('subject_definitions:\n' + definitions));
-assert.ok(finalPrompt.endsWith('detailed_description:\nA woman sits at the desk.'));
-assert.equal(includeReferenceDefinitions('subject_definitions: WRONG detailed_description: A woman sits at the desk.',definitions), finalPrompt.replace('detailed_description:\n', 'detailed_description: '));
-assert.equal(includeReferenceDefinitions('An empty room.', ''), 'An empty room.');
-assert.throws(() => includeReferenceDefinitions('subject_definitions: No video description.',definitions), /参照定義だけ/);
 const sections = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
-const structuredBody = 'summary:\n[reference generation] A silent study scene.\n\nretention_analysis:\n<Subject 1>: fully_preserved - appearance.\n\ndetailed_description:\n[Shot 1] She writes without speaking.\n\noverall_soundscape:\nRoom tone and pen scratches only. No voices.\n\nnon_diegetic_music:\nN/A';
-const structuredPrompt = includeReferenceDefinitions('subject_definitions:\n<Subject 1> WRONG\n\n' + structuredBody, definitions);
-assert.equal(structuredPrompt, 'subject_definitions:\n' + definitions + '\n\n' + structuredBody, 'Reference insertion preserves every section, including sound restrictions');
-assert.deepEqual([...structuredPrompt.matchAll(/^(\w+):$/gm)].map(match => match[1]), sections);
-assert.equal(includeReferenceDefinitions(structuredBody, definitions), structuredPrompt);
-const audioDefinition = '<Audio 1> is the voice-timbre reference for <Subject 1> (S1).\nIts source words are not copied.';
-const videoDefinition = '<Video 1> supplies the camera movement.';
-const mediaPrompt = includeReferenceDefinitions(`subject_definitions:\n<Subject 1> WRONG\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`, definitions);
-assert.equal(mediaPrompt, `subject_definitions:\n${definitions}\n${audioDefinition}\n${videoDefinition}\n\n${structuredBody}`);
-for (const separator of [' ', '\n', '\r\n', '\n\n']) {
-  const entries = ['<Subject 1> Wrong appearance.', audioDefinition, '<Picture 2> Wrong background.',
-    '<Audio 2> is the voice-timbre reference for <Subject 2> (S2).', videoDefinition];
-  const result = includeReferenceDefinitions('subject_definitions: ' + entries.join(separator) + '\n' + structuredBody, definitions);
-  assert.ok(result.includes(audioDefinition), 'Keep the complete audio definition, including its internal subject reference');
-  assert.ok(result.includes(entries[3]));
-  assert.ok(result.includes(videoDefinition));
-  assert.doesNotMatch(result, /Wrong appearance|Wrong background/);
-  assert.ok(result.endsWith(structuredBody), 'Sound and dialogue sections remain verbatim');
-  assert.equal(includeReferenceDefinitions(result, definitions), result, 'Repeated reference insertion does not lose or duplicate media');
-}
-for (const action of ['story', 'prompt']) for (const selected of [null, 0, 1]) {
-  const system = draftGraph(config, scene, plan, action, '最初は無言。そのあと「こんにちは」と言う。環境音のみ。BGMなし。', '', selected).writer.inputs.system_prompt;
+for (const [action, mode] of [['story', 'R2V'], ['prompt', 'T2V']]) for (const selected of [null, 0, 1]) {
+  const system = draftGraph(config, { ...scene, mode }, plan, action, '最初は無言。そのあと「こんにちは」と言う。環境音のみ。BGMなし。', '', selected).writer.inputs.system_prompt;
   assert.match(system, /Japanese quotation marks 「」/);
   assert.match(system, /first-person camera or 一人称視点 does not imply a spoken monologue/);
   assert.match(system, /specified people and time intervals/);
   assert.match(system, /except dialogue explicitly requested for this cut/);
-  assert.match(system, /<Audio 1> is the voice-timbre reference for <Subject 1> \(S1\)/);
+  if (mode === 'R2V') assert.match(system, /<Audio 1> is the voice-timbre reference for <Subject 1> \(S1\)/);
   assert.match(system, /discard that addition/);
   assert.equal(system.split('With 環境音のみ,').length, 2, 'One shared sound policy per request');
   assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
 }
 const r2vSystem = draftGraph(config, scene, plan, 'prompt', '無言。環境音のみ。BGMなし。', '', 0).writer.inputs.system_prompt;
 for (const heading of sections) assert.ok(r2vSystem.includes(heading + ':'));
-assert.doesNotMatch(r2vSystem, /Return only the video description/);
-assert.match(r2vSystem, /no dialogue or vocalizations/);
-assert.match(r2vSystem, /BGMなし/);
+assert.equal(r2vSystem, SYSTEM_PROMPTS.prompt_r2v.text, 'R2V prompts use the official guide without extra rules');
+assert.match(r2vSystem, /Preserve Japanese dialogue inside <d>\[Japanese\] \.\.\.<\/d>/);
 console.log('Reference definitions: image-order labels, multiview and storyboard preservation, multiple subjects, exact final insertion passed.');
 
 const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[0],label:'<Picture 2>',key:'same image'}]);

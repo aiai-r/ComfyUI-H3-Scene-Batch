@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings } from "./web/director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey } from "./web/director_llm.js";
 
 const calls = [], history = new Map(), bytes = new Map([["one.png", "one"], ["two.png", "two"]]);
 let failed = false, pending;
@@ -19,8 +19,8 @@ const api = { async fetchApi(path, options) {
 } };
 const source = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 let nextSeed = 1000;
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "includeReferenceDefinitions", "imageAnalysisKey", "DirectorBindings", "crypto", source + "\nreturn DirectorLLM;")(
-  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
+  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
 const node = { properties: { h3_llm: { loader: { model: "existing" }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }, graph: { change() {} } };
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "one.png" }, { kind: "image", file: "two.png" }] };
 const llm = new LLM(node, () => {});
@@ -131,8 +131,7 @@ const failedSeed = generated.at(-1).writer.inputs.seed;
 reply = '{"shots":[{""prompt":"Recovered complete prompt."}]}';
 const repaired = await llm.create(plan, scene, 0, state, 'prompt', () => {});
 assert.notEqual(generated.at(-1).writer.inputs.seed, failedSeed, 'Retry must bypass the cached malformed reply');
-assert.ok(repaired[0].prompt.endsWith('Recovered complete prompt.'));
-assert.ok(repaired[0].prompt.startsWith('subject_definitions:'));
+assert.equal(repaired[0].prompt, 'Recovered complete prompt.', 'The LLM prompt is kept as written');
 await llm.create(plan, scene, 0, state, 'all', () => {});
 assert.equal(JSON.parse(generated.at(-2).writer.inputs.custom_prompt).story, '');
 assert.equal(JSON.parse(generated.at(-1).writer.inputs.custom_prompt).story, reply, 'Combined action uses only the freshly generated story');
@@ -176,8 +175,8 @@ for (let index = 0; index < 4; index++) {
   assert.equal(request.story, allocation);
   assert.equal(request.scene_story, allocation);
   assert.equal(request.scene_cuts.length, 4);
-  assert.match(system, /Reference audio supplies voice timbre only/);
-  assert.match(system, /except dialogue explicitly requested for this cut/);
+  assert.match(system, /Full-Reference Mode Rewrite Output Format Guide/);
+  assert.match(system, /Write ONLY selected_cut/);
   assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
   if (index) {
     assert.equal(request.previous_prompt, sequentialDrafts[index - 1].prompt);
@@ -229,8 +228,7 @@ assert.equal(steps.length,4,'One click runs missing-image analysis, story, then 
 assert.equal(steps[0].request.instruction,purposeState.instruction);
 assert.equal(steps[1].request.target_image.image_number,3,'Japanese image number follows the visible slot, even across empty slots');
 assert.equal(steps[1].request.target_image.label,'<Picture 2>','H3 picture label follows active input order');
-assert.match(purposeResult[0].prompt,/three panels depict the SAME individual/);
-assert.match(purposeResult[0].prompt,/<Picture 2> is a storyboard/);
+assert.equal(purposeResult[0].prompt,'<Subject 1> follows the shot order in <Picture 2>.');
 assert.ok(steps[2].request.image_analysis.includes('three panels depict the SAME individual'));
 const frozen = structuredClone(purposeNode.properties.h3_image_analyses);
 await purpose.create(plan,fresh,0,{...purposeState,instruction:'女性が座って話す。画像の用途を変更。'},'all',()=>{});

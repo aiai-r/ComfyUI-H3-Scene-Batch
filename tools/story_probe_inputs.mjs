@@ -1,13 +1,13 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings } from '../web/director_llm.js';
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey } from '../web/director_llm.js';
 
 const [workflowPath, outputPath] = process.argv.slice(2);
 const workflow = JSON.parse(await readFile(workflowPath, 'utf8'));
 const config = workflow.nodes.find(n => n.type === 'H3SceneDirector').properties.h3_llm;
 const source = (await readFile(new URL('../web/director_dialog.js', import.meta.url), 'utf8'))
   .replace(/^import .*;\r?\n/gm, '').replaceAll('export ', '');
-const DirectorLLM = new Function('draftGraph', 'readDraft', 'sceneAssets', 'referenceDescriptions', 'referenceDefinitions', 'includeReferenceDefinitions', 'imageAnalysisKey', 'DirectorBindings', 'crypto', source + '\nreturn DirectorLLM;')(
-  draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, includeReferenceDefinitions, imageAnalysisKey, DirectorBindings, crypto);
+const DirectorLLM = new Function('draftGraph', 'readDraft', 'sceneAssets', 'referenceDescriptions', 'referenceDefinitions', 'imageAnalysisKey', 'crypto', source + '\nreturn DirectorLLM;')(
+  draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, crypto);
 const scene = { mode: 'R2V', assets: [
   { kind: 'image', file: 'worker.png' }, { kind: 'image', file: 'workshop.png' }, { kind: 'image', file: 'supervisor.png' },
   { kind: 'audio', file: 'worker.wav' }, { kind: 'audio', file: 'supervisor.wav' },
