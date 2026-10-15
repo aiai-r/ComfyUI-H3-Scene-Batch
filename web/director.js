@@ -459,8 +459,10 @@ function attachDirector(node) {
       tab.className = "cut-tab"; tab.setAttribute("aria-selected", index === cut); tab.setAttribute("aria-label", `カット ${index + 1}`);
     });
     const shot = plan.shots[cut]; const line = element(editor, "div", "row spread");
-    const seconds = input(line, "生成秒数（overlap込み）", shot.duration_seconds); seconds.style.width = "125px";
-    element(line, "span", "muted", "完成尺は重複を除いた長さです");
+    const seconds = input(line, `カット ${cut + 1} の生成秒数（overlap込み）`, shot.duration_seconds); seconds.style.width = "125px";
+    const secondsNote = element(line, "span", "muted", "完成尺は重複を除いた長さです");
+    // R2V whole-scene writing rebuilds every cut from the total, so the per-cut value is not used there.
+    seconds.parentElement.hidden = secondsNote.hidden = writingAll && scene.mode === "R2V";
     button(line, "このカットを削除", () => {
       if (plan.shots.length === 1) throw new Error("1カットは必要です。");
       collect(); const scope = `cut:${plan.shots[cut].id ?? cut}`, state = writingState();
