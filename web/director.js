@@ -71,7 +71,7 @@ function attachDirector(node) {
   const draft = button(toolbar, "LLM設定", () => { collect(); openLLMSettings(node); });
   const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
   button(toolbar, "中止", () => queue.busy ? queue.stop() : llmBusy ? llm.stop() : queue.project || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
-  let plan, scene, cut = 0, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
+  let plan, scene, cut = 0, writingAll = false, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
   let uploading = false, trackScroll = 0, pastedPlan = "";
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
   const llm = new DirectorLLM(node, message => { status.textContent = message; });
@@ -467,7 +467,12 @@ function attachDirector(node) {
       for (const values of [state.instructions, state.stories, state.previous]) delete values[scope];
       plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render();
     });
-    renderWriting(editor, cut);
+    // One LLM form at a time: the selected cut or the whole scene.
+    const writingTabs = element(editor, "div", "tabs");
+    const cutWriting = button(writingTabs, `カット ${cut + 1} のLLM作成`, () => { collect(); writingAll = false; render(); });
+    const allWriting = button(writingTabs, "全カットまとめて作成", () => { collect(); writingAll = true; render(); });
+    cutWriting.setAttribute("aria-selected", !writingAll); allWriting.setAttribute("aria-selected", writingAll);
+    renderWriting(editor, writingAll ? null : cut);
     const prompt = input(editor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 7;
     const advanced = element(editor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
     const fields = element(advanced, "div", "row"); const id = input(fields, "ID", shot.id ?? `cut${cut + 1}`); const seed = input(fields, "seed（空欄は接続seed）", shot.seed);
@@ -494,8 +499,6 @@ function attachDirector(node) {
     button(importing, "貼り付けたJSONを読み込む", () => importPlan(pasted.value));
     const file = element(importing, "input"); file.type = "file"; file.accept = ".json,application/json";
     file.onchange = async () => { error.textContent = ""; try { if (file.files[0]) importPlan(await file.files[0].text()); } catch (e) { report(e); } };
-    const bulk = element(editor, "details"); element(bulk, "summary", "", "補助操作：全カットまとめて作成");
-    renderWriting(bulk, null);
     const oldAnalysis = node.properties.h3_draft?.analysis;
     if (oldAnalysis) {
       const old = element(editor, "details"); element(old, "summary", "", "以前の画像解析結果");
