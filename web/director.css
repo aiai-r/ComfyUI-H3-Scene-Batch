@@ -58,6 +58,9 @@
 .h3-director .reference { background:#242d3c; padding:10px; border-radius:6px; }
 .h3-director .reference textarea { margin-top:8px; }
 .h3-director .cut-tab { white-space:nowrap; }
+.h3-director .cut-line { align-items:flex-end; gap:8px 12px; margin:4px 0 16px; }
+.h3-director .cut-line .muted { padding-bottom:8px; }
+.h3-director .cut-line .grow { flex:0 1 auto; }
 .h3-director .prompt { min-height:155px; }
 .h3-director .analysis-badge { position:absolute; top:43px; left:6px; font-size:10px; background:#14232de6; padding:2px 4px; pointer-events:none; }
 .h3-director .cut-writing { display:flex; flex-direction:column; gap:8px; padding:10px; border:1px solid #344452; border-radius:6px; }

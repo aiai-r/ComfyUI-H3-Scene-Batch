@@ -173,7 +173,7 @@ function attachDirector(node) {
     const instructions = writingState().instructions;
     return instructions[`cut:${plan.shots[cut]?.id ?? cut}`] || instructions.all || "";
   }
-  function renderWriting(parent, selected) {
+  function renderWriting(parent, selected, totalSlot) {
     const scope = selected === null ? "all" : `cut:${plan.shots[selected].id ?? selected}`;
     const state = writingState();
     const label = selected === null ? "全カット" : `カット ${selected + 1}`;
@@ -197,9 +197,9 @@ function attachDirector(node) {
     let total = null;
     if (wholeScene) {
       const sum = plan.shots.reduce((value, shot) => value + Number(shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15), 0);
-      total = input(section, "合計生成秒数（overlap込み）", state.total_seconds ?? sum); total.style.width = "160px";
+      total = input(totalSlot, "合計生成秒数（overlap込み）", state.total_seconds ?? sum); total.style.width = "160px";
       total.oninput = () => { state.total_seconds = total.value; changed(); };
-      element(section, "div", "muted", `${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
+      element(totalSlot, "span", "muted",`${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
     }
     const buttons = element(section, "div", "row");
     const actions = [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]];
@@ -458,11 +458,13 @@ function attachDirector(node) {
       const tab = button(cutTabs, `${index + 1} · ${shot.length != null ? `${shot.length}f` : `${shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15}s`}`, () => { collect(); cut = index; render(); });
       tab.className = "cut-tab"; tab.setAttribute("aria-selected", index === cut); tab.setAttribute("aria-label", `カット ${index + 1}`);
     });
-    const shot = plan.shots[cut]; const line = element(editor, "div", "row spread");
+    const shot = plan.shots[cut]; const line = element(editor, "div", "row spread cut-line");
     const seconds = input(line, `カット ${cut + 1} の生成秒数（overlap込み）`, shot.duration_seconds); seconds.style.width = "125px";
     const secondsNote = element(line, "span", "muted", "完成尺は重複を除いた長さです");
-    // R2V whole-scene writing rebuilds every cut from the total, so the per-cut value is not used there.
-    seconds.parentElement.hidden = secondsNote.hidden = writingAll && scene.mode === "R2V";
+    // R2V whole-scene writing rebuilds every cut from the total, so the total takes the per-cut field's place.
+    const wholeScene = writingAll && scene.mode === "R2V";
+    seconds.parentElement.hidden = secondsNote.hidden = wholeScene;
+    const totalSlot = element(line, "span"); totalSlot.style.display = wholeScene ? "contents" : "none";
     button(line, "このカットを削除", () => {
       if (plan.shots.length === 1) throw new Error("1カットは必要です。");
       collect(); const scope = `cut:${plan.shots[cut].id ?? cut}`, state = writingState();
@@ -474,7 +476,7 @@ function attachDirector(node) {
     const cutWriting = button(writingTabs, `カット ${cut + 1} のLLM作成`, () => { collect(); writingAll = false; render(); });
     const allWriting = button(writingTabs, "全カットまとめて作成", () => { collect(); writingAll = true; render(); });
     cutWriting.setAttribute("aria-selected", !writingAll); allWriting.setAttribute("aria-selected", writingAll);
-    renderWriting(editor, writingAll ? null : cut);
+    renderWriting(editor, writingAll ? null : cut, totalSlot);
     const prompt = input(editor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 7;
     const advanced = element(editor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
     const fields = element(advanced, "div", "row"); const id = input(fields, "ID", shot.id ?? `cut${cut + 1}`); const seed = input(fields, "seed（空欄は接続seed）", shot.seed);
