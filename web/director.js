@@ -471,17 +471,17 @@ function attachDirector(node) {
       if (scene.mode === "R2V") select(details, "R2V画像サイズ", [["match", "match"], ["max", "max"]], scene.ref_image_size ?? "match", v => { scene.ref_image_size = v; });
     }
     const prefix = input(settingsBody, "共通Prompt", plan.prompt_prefix, true); prefix.rows = 2;
-    const cutHeader = element(cutEditor, "div", "row spread"); element(cutHeader, "strong", "", `カット · ${plan.shots.length}`);
+    const cutHeader = element(editor, "div", "row spread section"); element(cutHeader, "strong", "", `カット · ${plan.shots.length}`);
     button(cutHeader, "＋ カット追加", () => {
       collect(); let index = plan.shots.length + 1; while (plan.shots.some(s => s.id === `cut${index}`)) index++;
       plan.shots.push({ id: `cut${index}`, prompt: "", duration_seconds: 15 }); cut = plan.shots.length - 1; save(); render();
     });
-    const cutTabs = element(cutEditor, "div", "strip"); cut = Math.min(cut, plan.shots.length - 1);
+    const cutTabs = element(editor, "div", "strip"); cut = Math.min(cut, plan.shots.length - 1);
     plan.shots.forEach((shot, index) => {
       const tab = button(cutTabs, `${index + 1} · ${shot.length != null ? `${shot.length}f` : `${shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15}s`}`, () => { collect(); cut = index; render(); });
       tab.className = "cut-tab"; tab.setAttribute("aria-selected", index === cut); tab.setAttribute("aria-label", `カット ${index + 1}`);
     });
-    const shot = plan.shots[cut]; const line = element(cutEditor, "div", "row spread cut-line");
+    const shot = plan.shots[cut]; const line = element(editor, "div", "row spread cut-line");
     const seconds = input(line, `カット ${cut + 1} の生成秒数（overlap込み）`, shot.duration_seconds); seconds.style.width = "125px";
     const secondsNote = hint(line, "完成尺は重複を除いた長さです");
     // R2V whole-scene writing rebuilds every cut from the total, so the total takes the per-cut field's place.
