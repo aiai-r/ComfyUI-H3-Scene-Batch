@@ -44,7 +44,25 @@ function attachDirector(node) {
     if (!event.dataTransfer?.files.length) return;
     event.preventDefault(); event.stopPropagation(); report(new Error("モードに対応する素材欄へドロップしてください。"));
   };
-  const top = element(root, "div", "row"); top.style.alignItems = "flex-end";
+  // Everyday controls stay in the head and the two panes; rarely used fields live in the settings drawer.
+  const head = element(root, "div", "head");
+  const headRow = element(head, "div", "head-row");
+  const modeSlot = element(headRow, "div", "mode-slot");
+  const toolbar = element(headRow, "div", "toolbar row");
+  const status = element(head, "p", "status muted"); status.setAttribute("role", "status");
+  const error = element(head, "p", "status"); error.setAttribute("role", "alert");
+  const create = element(root, "div", "director-grid");
+  const editor = element(create, "div", "pane");
+  const cutPane = element(create, "div", "pane");
+  const cutEditor = element(cutPane, "div");
+  const resultArea = element(cutPane, "div", "section");
+  const library = element(root, "div"); library.hidden = true;
+  const settings = element(root, "details", "settings"); element(settings, "summary", "", "詳細設定（プロジェクト・シーン名・共通Prompt・保存済み・Plan JSON）");
+  const tabs = element(settings, "div", "tabs section");
+  const createTab = button(tabs, "作成", () => switchTab(false));
+  const libraryTab = button(tabs, "保存済み・一括生成", () => { switchTab(true); return refreshLibrary(); });
+  const top = element(settings, "div", "row"); top.style.alignItems = "flex-end";
+  const settingsBody = element(settings, "div");
   const project = input(top, "プロジェクト", node.properties.h3_project ?? "MyScenes");
   project.placeholder = "プロジェクト名 または サーバー上の絶対パス";
   project.title = "scenes.jsonがあるフォルダを指定します。クラウドではクラウド側のパスを入力してください。";
@@ -58,27 +76,21 @@ function attachDirector(node) {
     status.textContent = `保存先を開きました：${data.directory}`;
   });
   openProject.title = "プロジェクトの保存フォルダーを開く";
-  const tabs = element(root, "div", "tabs section");
-  const createTab = button(tabs, "作成", () => switchTab(false));
-  const libraryTab = button(tabs, "保存済み・一括生成", () => { switchTab(true); return refreshLibrary(); });
-  const create = element(root, "div");
-  const library = element(root, "div"); library.hidden = true;
-  const editor = element(create, "div");
-  const resultArea = element(create, "div", "section");
-  const status = element(root, "p", "status muted"); status.setAttribute("role", "status");
-  const error = element(root, "p", "status"); error.setAttribute("role", "alert");
-  const toolbar = element(root, "div", "toolbar row");
   const draft = button(toolbar, "LLM設定", () => { collect(); openLLMSettings(node); });
   const generate = button(toolbar, "このシーンを生成", async () => { if (uploading) throw new Error("素材の読み込み完了を待ってください。"); collect(); save(); await busy(() => queue.generate(structuredClone({ plan, scene }))); }); generate.className = "primary";
   button(toolbar, "中止", () => queue.busy ? queue.stop() : llmBusy ? llm.stop() : queue.project || node.properties.h3_pending ? queue.stop() : projectRequest(project.value, "stop").then(refreshLibrary));
   let plan, scene, cut = 0, writingAll = false, selectedAsset = -1, selectedLane = "image", collect = () => {}, inLibrary = false, selected = new Set();
-  let uploading = false, trackScroll = 0, pastedPlan = "";
+  let uploading = false, trackScroll = 0, pastedPlan = "", expanded = null, menuFor = null, menu = null;
   const queue = new DirectorQueue(node, message => { status.textContent = message; }, showResult);
   const llm = new DirectorLLM(node, message => { status.textContent = message; });
   let llmBusy = false;
 
   function element(parent, tag, className = "", text = "") { const e = document.createElement(tag); e.className = className; e.textContent = text; parent.append(e); return e; }
   function report(e) { error.textContent = e.message ?? String(e); }
+  // Explanations sit behind a "?" mark so they do not take up rows.
+  function hint(parent, text) { const e = element(parent, "span", "hint", "?"); e.title = text; return e; }
+  function closeMenuElement() { menu?.remove(); menu = null; }
+  function closeMenu() { menuFor = null; closeMenuElement(); }
   function button(parent, text, action) { const e = element(parent, "button", "", text); e.type = "button"; e.onclick = async () => { error.textContent = ""; try { await action(); } catch (e) { report(e); } }; return e; }
   function input(parent, label, value, multiline = false) {
     const wrapper = element(parent, "label", "grow"); element(wrapper, "span", "label", label);
@@ -123,7 +135,9 @@ function attachDirector(node) {
   function locked(kind, slot) { return scene.mode === "L2V" && kind === "image" && slot === 0; }
   function assetAt(kind, slot) { return scene.assets.find(a => a.kind === kind && a.slot === slot); }
   function removeAsset(asset) {
-    collect(); scene.assets.splice(scene.assets.indexOf(asset), 1); selectedAsset = -1; save(); render();
+    collect(); scene.assets.splice(scene.assets.indexOf(asset), 1); selectedAsset = -1;
+    if (expanded === asset) expanded = null;
+    closeMenu(); save(); render();
   }
   function moveAsset(asset, slot) {
     collect(); const other = assetAt(asset.kind, slot), previous = asset.slot;
@@ -136,7 +150,11 @@ function attachDirector(node) {
     if (/INPUT|TEXTAREA/.test(event.target.tagName) || !event.clipboardData.files.length) return;
     event.preventDefault(); event.stopPropagation(); return upload([...event.clipboardData.files], selectedLane).catch(report);
   };
+  root.addEventListener("pointerdown", event => {
+    if (menu && !event.target.closest(".asset-menu, .clip-details")) closeMenu();
+  }, true);
   root.onkeydown = event => {
+    if (event.key === "Escape" && menu) { event.stopPropagation(); closeMenu(); return; }
     if (llmBusy) return;
     if (/INPUT|TEXTAREA|SELECT/.test(event.target.tagName) || inLibrary) return;
     const asset = scene.assets[selectedAsset];
@@ -146,7 +164,7 @@ function attachDirector(node) {
   };
   function switchTab(value) {
     if (uploading) throw new Error("素材の読み込み完了を待ってください。");
-    inLibrary = value; create.hidden = value; library.hidden = !value;
+    closeMenu(); inLibrary = value; create.hidden = value; modeSlot.hidden = value; library.hidden = !value;
     createTab.setAttribute("aria-selected", !value); libraryTab.setAttribute("aria-selected", value);
     draft.hidden = value; generate.hidden = value;
   }
@@ -157,9 +175,9 @@ function attachDirector(node) {
   async function llmTask(action) {
     if (llmBusy || queue.busy || uploading) throw new Error("実行中の処理が終わるまでお待ちください。");
     collect(); save(); llmBusy = true; llm.cancelled = false;
-    editor.inert = true; tabs.inert = true; root.dataset.llmBusy = "true";
+    closeMenu(); for (const pane of [editor, cutEditor, modeSlot, settings]) pane.inert = true; root.dataset.llmBusy = "true";
     try { await busy(action); }
-    finally { llmBusy = false; editor.inert = false; tabs.inert = false; root.dataset.llmBusy = "false"; render(); }
+    finally { llmBusy = false; for (const pane of [editor, cutEditor, modeSlot, settings]) pane.inert = false; root.dataset.llmBusy = "false"; render(); }
   }
   function writingState() {
     const state = node.properties.h3_draft ??= {};
@@ -178,11 +196,11 @@ function attachDirector(node) {
     const state = writingState();
     const label = selected === null ? "全カット" : `カット ${selected + 1}`;
     const section = element(parent, "div", "cut-writing section");
-    element(section, "strong", "", `${label}のLLM作成`);
+    const heading = element(section, "div", "row"); element(heading, "strong", "", `${label}のLLM作成`);
+    hint(heading, "各画像の用途と、作りたい動画をまとめて指定できます。未解析の画像だけ解析し、解析済みの用途・定義は固定して使います。変更は画像の☰から再解析してください。\n\n「ストーリー→Prompt」で未解析画像の解析から一括作成。「Prompt作成」はストーリーがあれば使用し、空欄なら日本語指示から作成します。");
     const instruction = input(section, `${label}の日本語指示`, state.instructions[scope], true);
     instruction.placeholder = "画像1：同じ女性の顔・正面・側面をまとめた外見資料。画像2：左上から順に使うストーリーボード。\n動画：女性が…";
-    instruction.oninput = () => { state.instructions[scope] = instruction.value; changed(); };
-    element(section, "div", "muted", "各画像の用途と、作りたい動画をまとめて指定できます。未解析の画像だけ解析し、解析済みの用途・定義は固定して使います。変更は画像の☰から再解析してください。");
+    instruction.rows = 4; instruction.oninput = () => { state.instructions[scope] = instruction.value; changed(); };
     const storyPanel = element(section, "details"); element(storyPanel, "summary", "", "ストーリー（任意・編集可能）");
     storyPanel.open = Boolean(state.stories[scope]);
     const story = input(storyPanel, `${label}のストーリー`, state.stories[scope], true); story.rows = 4;
@@ -191,7 +209,7 @@ function attachDirector(node) {
       const wrapper = element(section, "label"); const previous = element(wrapper, "input"); previous.type = "checkbox";
       previous.checked = state.previous[scope] ?? true; wrapper.append(" 前カットの終了状況をPromptに含める");
       previous.onchange = () => { state.previous[scope] = previous.checked; changed(); };
-      element(section, "div", "muted", `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
+      hint(wrapper, `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
     }
     const wholeScene = selected === null && scene.mode === "R2V";
     let total = null;
@@ -199,7 +217,7 @@ function attachDirector(node) {
       const sum = plan.shots.reduce((value, shot) => value + Number(shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15), 0);
       total = input(totalSlot, "合計生成秒数（overlap込み）", state.total_seconds ?? sum); total.style.width = "160px";
       total.oninput = () => { state.total_seconds = total.value; changed(); };
-      element(totalSlot, "span", "muted",`${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
+      hint(totalSlot, `${SCENE_CUT_SECONDS.max}秒以下は1カットで作成します。超える場合はLLMがカット数と各カットの秒数を決め、今のカットを作り直します。`);
     }
     const buttons = element(section, "div", "row");
     // Whole-scene writing is driven by the instruction, so its buttons sit right under it.
@@ -254,7 +272,6 @@ function attachDirector(node) {
           : `${label}のストーリーを作成しました。ストーリー欄で確認・編集できます。`;
       }));
     }
-    element(section, "div", "muted", "「ストーリー→Prompt」で未解析画像の解析から一括作成。「Prompt作成」はストーリーがあれば使用し、空欄なら日本語指示から作成します。");
   }
   function preview(parent, asset, small = false) {
     if (!asset.file) return element(parent, "span", "symbol", "未選択");
@@ -309,11 +326,15 @@ function attachDirector(node) {
 
   function render() {
     trackScroll = editor.querySelector(".media-track")?.scrollLeft ?? trackScroll;
-    editor.replaceChildren(); collect = () => {};
-    const header = element(editor, "div", "row");
+    closeMenuElement();
+    for (const pane of [modeSlot, editor, cutEditor, settingsBody]) pane.replaceChildren();
+    collect = () => {};
+    if (!scene.assets.includes(expanded)) expanded = null;
+    if (!scene.assets.includes(menuFor)) menuFor = null;
+    const header = element(settingsBody, "div", "row");
     const title = input(header, "シーン名（採用保存時）", node.properties.h3_title ?? ""); title.placeholder = "例：庭を歩く";
     title.oninput = () => { node.properties.h3_title = title.value; changed(); };
-    const modeGroup = element(editor, "div", "mode-group section");
+    const modeGroup = element(modeSlot, "div", "mode-group");
     const modebar = element(modeGroup, "div", "modebar"); modebar.setAttribute("aria-label", "Model Mode");
     element(modebar, "span", "mode-label", "Model Mode:");
     for (const [mode, label] of MODES) {
@@ -327,28 +348,30 @@ function attachDirector(node) {
       toggle.dataset.mode = mode; toggle.className = "mode-button";
       toggle.setAttribute("aria-pressed", mode === scene.mode);
     }
-    const actions = element(modebar, "div", "media-actions");
-    const chosen = scene.assets[selectedAsset];
-    if (chosen && !locked(chosen.kind, chosen.slot)) button(actions, "Remove", () => removeAsset(chosen)).className = "remove-media";
-    const clear = button(actions, "Clear", () => {
-      if (!scene.assets.length || !confirm("すべての素材を外しますか？Promptは保持します。")) return;
-      collect(); scene.assets = []; selectedAsset = -1; save(); render();
-    }); clear.className = "clear-media"; clear.disabled = !scene.assets.length;
-    element(modeGroup, "div", "mode-hint", {
+    hint(modebar, {
       R2V: "REF2VA · Image 9 / Video 3 / Audio 3 · ＋ または D&Dで追加",
       T2V: "T2VA · no input frame",
       I2V: "I2VA · one opening-frame slot",
       FL2V: "FL2VA · opening and closing-frame slots",
       L2V: "L2VA · one closing-frame slot · 先頭はNot Used",
     }[scene.mode]);
+    const actions = element(modebar, "div", "media-actions");
+    const chosen = scene.assets[selectedAsset];
+    if (chosen && !locked(chosen.kind, chosen.slot)) button(actions, "Remove", () => removeAsset(chosen)).className = "remove-media";
+    const clear = button(actions, "Clear", () => {
+      if (!scene.assets.length || !confirm("すべての素材を外しますか？Promptは保持します。")) return;
+      collect(); scene.assets = []; selectedAsset = -1; expanded = null; closeMenu(); save(); render();
+    }); clear.className = "clear-media"; clear.disabled = !scene.assets.length;
     const refs = referenceDescriptions(scene); const active = sceneAssets(scene);
     if (scene.mode !== "T2V") {
-      const imageHeader = element(editor, "div", "row spread"); element(imageHeader, "strong", "", "画像（シーン共通）");
+      const imageHeader = element(editor, "div", "row spread"); element(imageHeader, "strong", "", "素材（シーン共通）");
       const analyze = button(imageHeader, "画像をまとめて解析", () => llmTask(async () => {
         await llm.analyze(scene, undefined, false, analysisInstruction()); status.textContent = "未解析画像の解析が完了しました。解析済みの定義は保持しています。各画像の☰から確認・編集できます。";
       })); analyze.disabled = !active.some(a => a.kind === "image");
+      hint(imageHeader, "サムネイルの☰から、使用のON/OFF・解析・差し替え・削除をその場で実行できます。解析結果やメモは☰の「解析結果・メモを開く」で表示します。");
     }
     const media = element(editor, "div", "media-track"); media.hidden = scene.mode === "T2V";
+    media.onscroll = closeMenu;
     const tracks = element(media, "div", "media-tracks");
     function drops(target, kind, slot = null) {
       target.ondragover = event => { event.preventDefault(); event.stopPropagation(); target.classList.add("drag-over"); };
@@ -359,6 +382,7 @@ function attachDirector(node) {
         try { await upload([...event.dataTransfer.files], kind, slot); } catch (e) { report(e); }
       };
     }
+    let menuAnchor = null;
     for (const [kind, title] of LANES) {
       const count = slotCount(kind); if (!count) continue;
       const lane = element(tracks, "div", `media-lane ${kind}`);
@@ -386,11 +410,13 @@ function attachDirector(node) {
               const badge = element(tile, "span", "analysis-badge", llm.imageRecord(asset).text.trim() ? "解析済み" : "未解析");
               badge.title = "解析実行・Prompt作成時に画像内容を再確認します。☰から結果を確認・編集できます。";
             }
+            if (asset.enabled === false) element(tile, "span", "off-badge", "OFF");
             const remove = button(tile, "×", () => removeAsset(asset)); remove.className = "clip-remove"; remove.setAttribute("aria-label", `${title} ${slot + 1}を削除`);
             const removeClick = remove.onclick; remove.onclick = event => { event.stopPropagation(); return removeClick(); };
-            const details = button(tile, "☰", () => { collect(); selectedAsset = selectedAsset === index ? -1 : index; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
-            details.className = "clip-details"; details.title = "詳細を開く／閉じる"; details.setAttribute("aria-expanded", selectedAsset === index);
+            const details = button(tile, "☰", () => { collect(); selectedAsset = index; menuFor = menuFor === asset ? null : asset; render(); });
+            details.className = "clip-details"; details.title = "メニュー（ON/OFF・解析・差し替え・削除・詳細）"; details.setAttribute("aria-expanded", menuFor === asset);
             const detailsClick = details.onclick; details.onclick = event => { event.stopPropagation(); return detailsClick(); };
+            if (menuFor === asset) menuAnchor = details;
           }
         } else element(tile, "span", "slot-add", dead ? "Not Used" : "+");
         if (dead) element(tile, "span", "slot-lock", "🔒");
@@ -404,7 +430,7 @@ function attachDirector(node) {
         if (asset && !dead) tile.onpointerdown = event => {
           if (event.button !== 0 || event.target.closest("button")) return;
           event.stopPropagation(); collect(); selectedAsset = index; selectedLane = kind;
-          const origin = event.clientX, zoom = tile.getBoundingClientRect().width / (tile.offsetWidth || 112); let dragged = false;
+          const origin = event.clientX, zoom = tile.getBoundingClientRect().width / (tile.offsetWidth || 84); let dragged = false;
           tile.setPointerCapture?.(event.pointerId);
           tile.onpointermove = move => { dragged ||= Math.abs(move.clientX - origin) >= 4; if (dragged) { tile.style.transform = `translateX(${(move.clientX - origin) / zoom}px)`; tile.classList.add("dragging"); } };
           tile.onpointerup = up => {
@@ -422,26 +448,21 @@ function attachDirector(node) {
     }
     media.scrollLeft = trackScroll;
     selectedAsset = Math.min(selectedAsset, scene.assets.length - 1);
-    const asset = scene.assets[selectedAsset];
+    if (menuAnchor) renderMenu(menuFor, menuAnchor, active);
+    // The details panel is only for reading or editing the analysis, note and file.
+    const asset = expanded;
     if (asset) {
       const panel = element(editor, "div", "reference"); const line = element(panel, "div", "row spread");
-      const enabledLabel = element(line, "label"); const enabled = element(enabledLabel, "input"); enabled.type = "checkbox"; enabled.checked = asset.enabled !== false; enabledLabel.append(" 使用する");
-      enabled.onchange = () => { asset.enabled = enabled.checked; save(); render(); };
-      element(line, "span", "muted", `${LANES.find(l => l[0] === asset.kind)[1]} ${asset.slot + 1}`);
-      button(line, "差し替え", () => chooseFiles(asset.kind, asset.slot)); button(line, "削除", () => removeAsset(asset));
+      element(line, "strong", "", `${LANES.find(l => l[0] === asset.kind)[1]} ${asset.slot + 1} の詳細`);
+      if (asset.enabled === false) element(line, "span", "muted", "（使用OFF）");
+      button(line, "閉じる", () => { collect(); expanded = null; render(); });
       preview(panel, asset);
       if (asset.kind === "image" && active.includes(asset)) {
-        button(line, "この画像を再解析", () => llmTask(async () => {
-          await llm.analyze(scene, [asset], true, analysisInstruction()); status.textContent = "現在の日本語指示で、この画像の参照定義を更新しました。";
-        }));
         const record = llm.imageRecord(asset);
-        const analysis = input(panel, "画像解析結果（確認・編集）", record.text, true); analysis.rows = 4;
+        const analysisLine = element(panel, "div", "row");
+        const analysis = input(analysisLine, "画像解析結果（確認・編集）", record.text, true); analysis.rows = 6;
         analysis.oninput = () => { record.text = analysis.value; changed(); };
-        element(panel, "div", "muted", "保存した用途・定義を再利用します。以前の解析に三面図などの説明がなければ、日本語指示に用途を書いて再解析してください。Subject番号とPicture番号は現在の画像順に合わせてPromptへ組み込みます。");
-      }
-      if (asset.kind === "video") {
-        const label = element(panel, "label"); const audio = element(label, "input"); audio.type = "checkbox"; audio.checked = asset.use_audio ?? false; label.append(" 動画の音声も参照する");
-        audio.onchange = () => { asset.use_audio = audio.checked; save(); render(); };
+        hint(analysisLine, "保存した用途・定義を再利用します。以前の解析に三面図などの説明がなければ、日本語指示に用途を書いて再解析してください。Subject番号とPicture番号は現在の画像順に合わせてPromptへ組み込みます。");
       }
       const note = input(panel, "素材メモ（LLMに伝える役割・内容）", asset.note, true);
       note.oninput = () => { asset.note = note.value; save(); };
@@ -449,20 +470,20 @@ function attachDirector(node) {
       const filename = input(details, "input/output内のファイル", asset.file); filename.onchange = () => { asset.file = filename.value; save(); render(); };
       if (scene.mode === "R2V") select(details, "R2V画像サイズ", [["match", "match"], ["max", "max"]], scene.ref_image_size ?? "match", v => { scene.ref_image_size = v; });
     }
-    const prefix = input(editor, "共通Prompt", plan.prompt_prefix, true); prefix.rows = 2;
-    const cutHeader = element(editor, "div", "row spread section"); element(cutHeader, "strong", "", `カット · ${plan.shots.length}`);
+    const prefix = input(settingsBody, "共通Prompt", plan.prompt_prefix, true); prefix.rows = 2;
+    const cutHeader = element(cutEditor, "div", "row spread"); element(cutHeader, "strong", "", `カット · ${plan.shots.length}`);
     button(cutHeader, "＋ カット追加", () => {
       collect(); let index = plan.shots.length + 1; while (plan.shots.some(s => s.id === `cut${index}`)) index++;
       plan.shots.push({ id: `cut${index}`, prompt: "", duration_seconds: 15 }); cut = plan.shots.length - 1; save(); render();
     });
-    const cutTabs = element(editor, "div", "strip"); cut = Math.min(cut, plan.shots.length - 1);
+    const cutTabs = element(cutEditor, "div", "strip"); cut = Math.min(cut, plan.shots.length - 1);
     plan.shots.forEach((shot, index) => {
       const tab = button(cutTabs, `${index + 1} · ${shot.length != null ? `${shot.length}f` : `${shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15}s`}`, () => { collect(); cut = index; render(); });
       tab.className = "cut-tab"; tab.setAttribute("aria-selected", index === cut); tab.setAttribute("aria-label", `カット ${index + 1}`);
     });
-    const shot = plan.shots[cut]; const line = element(editor, "div", "row spread cut-line");
+    const shot = plan.shots[cut]; const line = element(cutEditor, "div", "row spread cut-line");
     const seconds = input(line, `カット ${cut + 1} の生成秒数（overlap込み）`, shot.duration_seconds); seconds.style.width = "125px";
-    const secondsNote = element(line, "span", "muted", "完成尺は重複を除いた長さです");
+    const secondsNote = hint(line, "完成尺は重複を除いた長さです");
     // R2V whole-scene writing rebuilds every cut from the total, so the total takes the per-cut field's place.
     const wholeScene = writingAll && scene.mode === "R2V";
     seconds.parentElement.hidden = secondsNote.hidden = wholeScene;
@@ -474,13 +495,13 @@ function attachDirector(node) {
       plan.shots.splice(cut, 1); cut = Math.max(0, cut - 1); save(); render();
     });
     // One LLM form at a time: the selected cut or the whole scene.
-    const writingTabs = element(editor, "div", "tabs");
+    const writingTabs = element(editor, "div", "tabs writing-tabs");
     const cutWriting = button(writingTabs, `カット ${cut + 1} のLLM作成`, () => { collect(); writingAll = false; render(); });
     const allWriting = button(writingTabs, "全カットまとめて作成", () => { collect(); writingAll = true; render(); });
     cutWriting.setAttribute("aria-selected", !writingAll); allWriting.setAttribute("aria-selected", writingAll);
     renderWriting(editor, writingAll ? null : cut, totalSlot);
-    const prompt = input(editor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 7;
-    const advanced = element(editor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
+    const prompt = input(cutEditor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 12;
+    const advanced = element(cutEditor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
     const fields = element(advanced, "div", "row"); const id = input(fields, "ID", shot.id ?? `cut${cut + 1}`); const seed = input(fields, "seed（空欄は接続seed）", shot.seed);
     const start = input(advanced, "開始状態", shot.start_state, true); const end = input(advanced, "終了状態", shot.end_state, true);
     collect = () => {
@@ -499,7 +520,7 @@ function attachDirector(node) {
     };
     for (const field of [prefix, seconds, prompt, id, seed, start, end]) field.oninput = () => { try { collect(); save(); error.textContent = ""; } catch (e) { report(e); } };
     id.onchange = () => { try { collect(); save(); render(); } catch (e) { report(e); } };
-    const importing = element(editor, "details"); element(importing, "summary", "", "Plan JSONを読み込む");
+    const importing = element(settingsBody, "details"); element(importing, "summary", "", "Plan JSONを読み込む");
     const pasted = input(importing, "Plan JSONを貼り付け", pastedPlan, true); pasted.rows = 6; pasted.spellcheck = false;
     pasted.oninput = () => { pastedPlan = pasted.value; };
     button(importing, "貼り付けたJSONを読み込む", () => importPlan(pasted.value));
@@ -507,13 +528,37 @@ function attachDirector(node) {
     file.onchange = async () => { error.textContent = ""; try { if (file.files[0]) importPlan(await file.files[0].text()); } catch (e) { report(e); } };
     const oldAnalysis = node.properties.h3_draft?.analysis;
     if (oldAnalysis) {
-      const old = element(editor, "details"); element(old, "summary", "", "以前の画像解析結果");
+      const old = element(settingsBody, "details"); element(old, "summary", "", "以前の画像解析結果");
       input(old, "移行前の解析文（保存済み）", oldAnalysis, true).readOnly = true;
     }
   }
+  // Per-asset actions run straight from the ☰ menu without opening the details panel.
+  function renderMenu(asset, anchor, active) {
+    menu = element(root, "div", "asset-menu"); menu.setAttribute("role", "menu");
+    const item = (text, action) => { const e = button(menu, text, () => { closeMenu(); return action(); }); e.setAttribute("role", "menuitem"); return e; };
+    const on = asset.enabled !== false;
+    item(on ? "使用をOFFにする" : "使用をONにする", () => { collect(); asset.enabled = !on; save(); render(); });
+    if (asset.kind === "image" && active.includes(asset)) {
+      item(llm.imageRecord(asset).text.trim() ? "この画像を再解析" : "この画像を解析", () => llmTask(async () => {
+        await llm.analyze(scene, [asset], true, analysisInstruction()); status.textContent = "現在の日本語指示で、この画像の参照定義を更新しました。";
+      }));
+    }
+    if (asset.kind === "video") {
+      item(asset.use_audio ? "動画の音声参照をOFFにする" : "動画の音声も参照する", () => { collect(); asset.use_audio = !asset.use_audio; save(); render(); });
+    }
+    item("差し替え", () => chooseFiles(asset.kind, asset.slot));
+    item("削除", () => removeAsset(asset)).className = "danger";
+    item("解析結果・メモを開く", () => { collect(); expanded = asset; render(); editor.querySelector(".reference")?.scrollIntoView({ block: "nearest" }); });
+    const box = root.getBoundingClientRect(), at = anchor.getBoundingClientRect();
+    const scale = root.offsetWidth ? box.width / root.offsetWidth : 1;
+    menu.style.left = `${Math.max(0, Math.min((at.left - box.left) / scale + root.scrollLeft, root.scrollWidth - 200))}px`;
+    menu.style.top = `${(at.bottom - box.top) / scale + root.scrollTop + 4}px`;
+  }
 
   function showResult(result, canAdopt = true) {
-    resultArea.replaceChildren(); element(resultArea, "strong", "", "完成結果" + (result.duration_seconds != null ? ` · ${result.duration_seconds.toFixed(2)}秒` : ""));
+    resultArea.replaceChildren(); const heading = element(resultArea, "div", "row");
+    element(heading, "strong", "", "完成結果" + (result.duration_seconds != null ? ` · ${result.duration_seconds.toFixed(2)}秒` : ""));
+    hint(heading, "保存対象はこの動画を生成した時点のPrompt・seed・使用素材です。");
     const video = element(resultArea, "video", "result-video"); video.src = viewUrl(result.video); video.controls = true; video.preload = "metadata";
     const adopted = result.adopted;
     if (adopted) element(resultArea, "p", "", `保存済み：「${adopted.project}」の${adopted.number}シーン目「${adopted.title}」`);
@@ -525,12 +570,12 @@ function attachDirector(node) {
       status.textContent = saved.existing ? `この結果は${where}として保存済みです。` : `${where}として採用保存しました。`;
       node.properties.h3_project = project.value; changed();
     });
-    element(resultArea, "p", "muted", "保存対象はこの動画を生成した時点のPrompt・seed・使用素材です。");
   }
 
   async function refreshLibrary() {
     const data = await projectRequest(project.value, "list"); const batch = data.batch;
-    library.replaceChildren(); element(library, "p", "muted", "Prompt・素材・seed・追加LoRAは保存設定を使用します。Turbo LoRAは系統別に変更できます。stepsはH3 Scene Settingsの共通設定を使います。モデル・サンプラー・解像度も現在のworkflow設定です。");
+    library.replaceChildren(); button(library, "← 作成に戻る", () => switchTab(false));
+    element(library, "p", "muted", "Prompt・素材・seed・追加LoRAは保存設定を使用します。Turbo LoRAは系統別に変更できます。stepsはH3 Scene Settingsの共通設定を使います。モデル・サンプラー・解像度も現在のworkflow設定です。");
     element(library, "p", "muted", "LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使用します。再開時はバッチ開始時のturbo設定を引き継ぎます。");
     const loraSettings = element(library, "div", "section");
     button(loraSettings, "バッチLoRA設定", async () => {
