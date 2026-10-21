@@ -1,6 +1,5 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { applyPromotedWidgetControl } from "../../scripts/promotedWidgetControl.js";
 
 export async function projectRequest(project, action, values = {}) {
   const response = await api.fetchApi("/h3_scene_director/project", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project, action, ...values }) });
@@ -119,10 +118,86 @@ function queueNodes(graph) {
     ? [...queueNodes(node.subgraph), node] : [node]);
 }
 
+// Seed fields promoted out of a subgraph keep their value on the subgraph node,
+// so ComfyUI's own control widget inside cannot move them. Advance them here the
+// same way ComfyUI does, without importing frontend internals that change by version.
+const CONTROL_MODES = new Set(["fixed", "increment", "increment-wrap", "decrement", "randomize"]);
+const SAFE_INTEGER = 1125899906842624;
+const controlledHosts = new WeakSet();
+
+const controlRunsBefore = () => app.extensionManager?.setting?.get?.("Comfy.WidgetControlMode") === "before";
+const isControlWidget = w => w?.type === "combo" && CONTROL_MODES.has(w.value)
+  && typeof w.beforeQueued === "function" && typeof w.afterQueued === "function";
+
+function promotedSource(host, name, depth = 0) {
+  if (depth > 100 || !host.isSubgraphNode?.()) return undefined;
+  const slot = host.subgraph.inputNode?.slots?.find(s => s.name === name);
+  for (const id of slot?.linkIds ?? []) {
+    const { inputNode, input } = host.subgraph.getLink(id)?.resolve(host.subgraph) ?? {};
+    if (!inputNode || !input) continue;
+    if (inputNode.isSubgraphNode?.()) return promotedSource(inputNode, input.name, depth + 1);
+    const widget = inputNode.getWidgetFromSlot?.(input);
+    if (widget) return widget;
+  }
+  return undefined;
+}
+
+function comboFilter(filter) {
+  if (!filter) return undefined;
+  if (filter.length > 1 && filter.startsWith("/") && filter.endsWith("/")) {
+    try { const regex = new RegExp(filter.slice(1, -1)); return item => regex.test(item); } catch {}
+  }
+  const lower = filter.toLocaleLowerCase();
+  return item => item.toLocaleLowerCase().includes(lower);
+}
+
+function nextControlledValue(target, linked) {
+  const control = linked.find(isControlWidget), mode = control.value;
+  if (mode === "fixed") return undefined;
+  if (target.type === "combo") {
+    const all = (Array.isArray(target.options?.values) ? target.options.values : []).filter(v => typeof v === "string" || typeof v === "number");
+    const filter = linked.find(w => w !== control && w.type === "string")?.value;
+    const check = comboFilter(typeof filter === "string" ? filter : "");
+    const values = check ? all.filter(v => check(String(v))) : all;
+    if (!values.length) return undefined;
+    let index = values.indexOf(target.value);
+    if (index < 0) index = values.findIndex(v => String(v) === String(target.value));
+    if (mode === "increment") index += 1;
+    else if (mode === "increment-wrap") index = index + 1 >= values.length ? 0 : index + 1;
+    else if (mode === "decrement") index -= 1;
+    else index = Math.floor(Math.random() * values.length);
+    return values[Math.max(0, Math.min(values.length - 1, index))];
+  }
+  if (typeof target.value !== "number") return undefined;
+  const { min: rawMin = 0, max: rawMax = 1, step2 = 1 } = target.options ?? {};
+  const max = Math.min(SAFE_INTEGER, rawMax), min = Math.max(-SAFE_INTEGER, rawMin);
+  let next = target.value;
+  if (mode === "increment" || mode === "increment-wrap") next += step2;
+  else if (mode === "decrement") next -= step2;
+  else next = Math.floor(Math.random() * ((max - min) / step2)) * step2 + min;
+  return Math.min(Math.max(next, min), max);
+}
+
+function controlPromotedWidgets(node, phase) {
+  if ((phase === "beforeQueued") !== controlRunsBefore() || !node.isSubgraphNode?.()) return;
+  (node.inputs ?? []).forEach((input, index) => {
+    if (!input.widgetId || node.isInputConnected(index)) return;
+    const linked = promotedSource(node, input.name)?.linkedWidgets;
+    if (!linked?.some(isControlWidget)) return;
+    const host = node.getWidgetFromSlot?.(input);
+    if (!host) return;
+    // Like ComfyUI, "before" timing leaves the first run on the current value.
+    if (phase === "beforeQueued" && !controlledHosts.has(host)) { controlledHosts.add(host); return; }
+    const next = nextControlledValue(host, linked);
+    if (next === undefined) return;
+    host.value = next; host.callback?.(next);
+  });
+}
+
 function controlWidgets(nodes, phase) {
   for (const node of nodes) {
     for (const widget of node.widgets ?? []) widget[phase]?.({ isPartialExecution: false });
-    applyPromotedWidgetControl(node, phase);
+    controlPromotedWidgets(node, phase);
   }
 }
 

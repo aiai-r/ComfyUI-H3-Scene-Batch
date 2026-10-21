@@ -22,7 +22,7 @@ const reactive = value => new Proxy(value, { get(target, key) {
 const app = { graphToPrompt: async () => reactive(template), rootGraph: { _nodes: [{ widgets: [{
   beforeQueued: () => phases.push("before"), afterQueued: () => phases.push("after"),
 }] }] } };
-const { sceneRequest, resultNode, DirectorQueue, batchProgress, normalizeLoraPaths, submitScene } = new Function("app", "api", "applyPromotedWidgetControl", "setTimeout", source + "\nreturn {sceneRequest,resultNode,DirectorQueue,batchProgress,normalizeLoraPaths,submitScene};")(app, api, () => {}, callback => callback());
+const { sceneRequest, resultNode, DirectorQueue, batchProgress, normalizeLoraPaths, submitScene } = new Function("app", "api", "setTimeout", source + "\nreturn {sceneRequest,resultNode,DirectorQueue,batchProgress,normalizeLoraPaths,submitScene};")(app, api, callback => callback());
 const record = { plan: { shots: [{ prompt: "Garden", seed: "18446744073709551615", duration_seconds: 15 }, { prompt: "Pond", seed: "0", duration_seconds: 15 }] }, scene: { mode: "T2V", assets: [] } };
 const before = structuredClone(template);
 assert.throws(() => structuredClone(reactive(template)), { name: "DataCloneError" });
