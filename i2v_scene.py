@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -62,6 +63,148 @@ WHOLE_SCENE_PROMPT = "The story is the whole-scene allocation. Write ONLY select
 
 LABEL = "first frame"
 REFERENCES = [{"asset_index": 0, "label": LABEL, "kind": "image", "note": "", "image_attached": False}]
+
+# Whole-scene I2V: short_storygen_h3's AI-planned Contex-Loop request for I2V (core/h3_prompter.py
+# _build_auto_plan_chain_prompt), plus the clip-count rules Scene Director added to its R2V copy.
+CUT_MIN, CUT_MAX = 4, 15
+REFERENCE_HANDLING_RULE = "The original images are not attached to this generation step. Use their saved visual analyses only. Audio and video contents are not analyzed; use those assets only as explicitly directed by the user."
+# Official base-mode (T2VA/I2VA/FL2VA/L2VA) writing guide, copied verbatim from
+# ComfyUI-MiniMaxH3-Easy prompt_guides/h3_general/references/base-en.txt (MIT, nkxx188).
+BASE_GUIDE = (Path(__file__).parent / "h3_base_guide.txt").read_text(encoding="utf-8").strip()
+
+
+def scene_prompt(total, instruction, filename, analysis):
+    min_str, max_str, total_str = f"{CUT_MIN:.2f}", f"{CUT_MAX:.2f}", f"{total:.2f}"
+    # One clip more than the bare minimum, so unequal lengths still fit under the per-clip maximum.
+    min_clips = max(1, min(math.ceil(total / CUT_MAX) + 1, math.floor(total / CUT_MIN)))
+    image = (f"- <Picture 1> ({filename}): Assigned Role = First Frame (<Picture 1> anchor for Scene 1 start); "
+             f"User Note = none; Saved Visual Analysis = {to_json({'description': analysis})}")
+    return f"""You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
+Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
+
+=======================================================
+PROJECT SPECIFICATIONS:
+- Base Mode: I2V (Base Mode: I2V (Image-to-Video). Scene 1 begins with <Picture 1> at 0.00s. Continuation scenes continue the motion flow.)
+- Total Runtime: EXACTLY {total_str} seconds.
+- Number of Clips: YOU decide it from the story, but use AT LEAST {min_clips} clips. Do not pad the story to reach a number, and do not cut the story short.
+- Length of Each Clip: YOU decide it individually, between {min_str} and {max_str} seconds.
+- Visual Style / Art Direction: Use the saved visual analyses when present, otherwise infer the most fitting cinematic style from the user story
+- Pre-analyzed Reference Images:
+{image}
+{REFERENCE_HANDLING_RULE}
+
+USER STORY CONCEPT / INSTRUCTION:
+\"\"\"{instruction}\"\"\"
+
+USER-PROVIDED MINIMAX H3 GUIDE:
+{BASE_GUIDE}
+
+=======================================================
+CLIP PLANNING RULES (MANDATORY):
+1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between {min_str} and {max_str} seconds. State it as a whole or half second value.
+2. **Exact total**: the sum of every declared clip length MUST equal exactly {total_str} seconds.
+3. **Minimum clip count**: use AT LEAST {min_clips} clips. Fewer clips cannot reach {total_str} seconds while every clip stays at or under {max_str} seconds with unequal lengths.
+4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed {max_str}, add one more clip instead of lengthening the last clip. Never make any clip longer than {max_str} seconds to reach the total.
+5. **Do NOT give every clip the same length.** Match each clip's length to the weight of what happens inside it: a quiet beat can be {min_str}-6 seconds, a long continuous action can run up to {max_str} seconds.
+6. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
+7. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
+8. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
+9. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
+
+=======================================================
+OUTPUT FORMAT:
+
+### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)
+- **ストーリー概要**: Overall narrative arc.
+- **クリップ配分表** (one row per clip; the seconds column is the raw H3 generation length of that clip):
+| クリップ | 秒数 | 累計 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・末尾の未完アクション | 音響・BGM |
+|---|---|---|---|---|---|
+| Clip 1 | 9秒 | 9秒 | ... | (末尾: 〜〜している最中で終了) | ... |
+| Clip 2 | 13秒 | 22秒 | ... | (冒頭: 〜〜を継続 / 末尾: 〜〜で終了) | ... |
+- **合計**: クリップ数と生の生成秒数合計。最後の累計が {total_str}秒 と一致し、どのクリップも {max_str}秒 以下であることを確認する。
+
+### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)
+
+Output one block per clip under `### Part 2`, in order. The header of each block MUST carry that clip's own length exactly in this form:
+
+=== SCENE 1 (duration: 9s) ===
+```text
+integrated_multimodal_description: [Shot 1] ...
+overall_soundscape: ...
+non_diegetic_music: ...
+```
+
+=== SCENE 2 (duration: 13s) ===
+```text
+integrated_multimodal_description: [Shot 1] Continue the unfinished action from the previous clip...
+overall_soundscape: ...
+non_diegetic_music: ...
+```
+
+Continue with `=== SCENE 3 (duration: Xs) ===` and so on until the story is finished.
+"""
+
+
+def js_round(value):
+    return math.floor(value + 0.5)
+
+
+def scene_timestamps(prompt, length, offset):
+    """Director's sceneTimestamps: fold a clip written on the story timeline back to 0s."""
+    pattern = re.compile(r"(At\s+)(?:(\d{1,2}):)?(\d{2})\.(\d{3})", re.I)
+    value = lambda m: (int(m.group(2)) if m.group(2) else 0) * 60 + int(m.group(3)) + int(m.group(4)) / 1000
+    found = [value(m) for m in pattern.finditer(prompt)]
+    cumulative = bool(found) and offset > 0 and any(v >= length for v in found) and all(v >= offset for v in found)
+
+    def fold(m):
+        total = value(m)
+        if cumulative:
+            relative = total - offset
+        elif total >= length:
+            relative = total - offset if offset > 0 and total >= offset else math.fmod(total, length)
+        else:
+            return m.group(0)
+        if relative >= length:
+            relative = max(length - 0.5, 0)
+        relative = max(relative, 0)
+        return f"{m.group(1)}{math.floor(relative / 60):02d}:{math.floor(math.fmod(relative, 60)):02d}.{js_round(math.fmod(relative, 1) * 1000):03d}"
+    return pattern.sub(fold, prompt)
+
+
+SCENE_HEADER = re.compile(
+    r"(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*(\d+)([^=\n*\]]*)(?:===|\]|\*\*)?\s*"
+    r"(?:```(?:text|markdown)?\s*\n([\s\S]*?)\n```|(?=\n(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*\d+|\Z))", re.I)
+
+
+def read_scene(text):
+    """Director's readScene: keep the LLM's own clip lengths and report problems."""
+    content = text.strip()
+    raw = []
+    for m in SCENE_HEADER.finditer(content):
+        body = (m.group(3) or "").strip()
+        if not body:
+            fenced = re.search(r"```(?:text|markdown)?\s*\n([\s\S]*?)\n```", m.group(0))
+            body = (fenced.group(1) if fenced else "").strip()
+        if body:
+            declared = re.search(r"duration\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:seconds|secs|sec|s|秒)", m.group(2), re.I)
+            raw.append((body, declared.group(1) if declared else None))
+    if not raw:
+        raw = [(m.group(1).strip(), None) for m in re.finditer(r"```(?:text|markdown)?\s*\n([\s\S]*?)\n```", content)
+               if re.search(r"integrated_multimodal_description|\[Shot|overall_soundscape|subject_definitions", m.group(1))]
+    if not raw:
+        raise ValueError("LLMの返答からカットを読み取れませんでした。")
+    problems, cuts, start = [], [], 0
+    for index, (body, declared) in enumerate(raw, 1):
+        seconds = CUT_MAX if declared is None else float(declared)
+        seconds = int(seconds) if float(seconds).is_integer() else seconds
+        if declared is None:
+            problems.append(f"カット {index} の秒数が書かれていません（{CUT_MAX}秒として入れました）。")
+        elif seconds < CUT_MIN or seconds > CUT_MAX:
+            problems.append(f"カット {index} が{seconds}秒です（1カットは{CUT_MIN}〜{CUT_MAX}秒）。")
+        prompt = scene_timestamps(re.sub(r"^(\s*)non-diegetic_music\s*:", r"\1non_diegetic_music:", body, count=1, flags=re.I | re.M), seconds, start)
+        start += seconds
+        cuts.append({"prompt": prompt, "duration_seconds": seconds})
+    return cuts, problems
 
 
 def writing_prompt(action, partial, continuation):
@@ -140,19 +283,6 @@ def read_cut(text, number):
     return {"prompt": cut["prompt"], "start_state": text_of(cut.get("start_state")), "end_state": text_of(cut.get("end_state"))}
 
 
-def cut_seconds_list(text):
-    seconds = []
-    for item in str(text).replace("、", ",").split(","):
-        try:
-            value = float(item.strip())
-        except ValueError:
-            raise ValueError(f"カット秒数はカンマ区切りの数値で入力してください: {text}")
-        if value <= 0:
-            raise ValueError(f"カット秒数は正の数で入力してください: {text}")
-        seconds.append(int(value) if value.is_integer() else value)
-    return seconds
-
-
 def stage_image(image):
     # The video pipeline loads the first frame by filename from ComfyUI's input folder.
     pixels = np.clip(255.0 * image[0].cpu().float().numpy(), 0, 255).astype(np.uint8)
@@ -178,7 +308,8 @@ class H3I2VScene:
             "steps": ("INT", {"forceInput": True}),
             "base_seed": ("INT", {"forceInput": True}),
             "instruction": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": False}),
-            "cut_seconds": ("STRING", {"default": "15,15,15,15"}),
+            "total_seconds": ("FLOAT", {"default": 60.0, "min": 0.5, "max": 3600.0, "step": 0.5,
+                                        "tooltip": "Total generated seconds including overlap. Over 15 seconds, the LLM decides the cut count and each cut's length."}),
             "llm_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True}),
         }, "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"}}
 
@@ -186,15 +317,18 @@ class H3I2VScene:
     RETURN_NAMES = ("plan", "scene")
     FUNCTION = "build"
     CATEGORY = "H3 Scene Batch"
-    DESCRIPTION = "I2V scene from one image: Director's image analysis, story and per-cut prompts, then Context-Loop cuts."
+    DESCRIPTION = "I2V scene from one image: image analysis, LLM-planned cuts and prompts, then Context-Loop cuts."
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
     def build(self, image, llama_model, story_parameters, prompt_parameters, width, height, steps, base_seed,
-              instruction, cut_seconds, llm_seed, prompt=None, unique_id=None):
-        seconds = cut_seconds_list(cut_seconds)
+              instruction, total_seconds, llm_seed, prompt=None, unique_id=None):
+        total = float(total_seconds)
+        if not math.isfinite(total) or total <= 0:
+            raise ValueError("合計生成秒数は正の数を指定してください。")
+        total = int(total) if total.is_integer() else total
         image = image[:1]
         file = stage_image(image)
         instruct = nodes.NODE_CLASS_MAPPINGS["llama_cpp_instruct_adv"]()
@@ -202,7 +336,8 @@ class H3I2VScene:
         def ask(system, request, parameters, images=None):
             comfy.model_management.throw_exception_if_processing_interrupted()
             text = instruct.process(
-                llama_model=llama_model, preset_prompt="Empty - Nothing", custom_prompt=to_json(request), system_prompt=system,
+                llama_model=llama_model, preset_prompt="Empty - Nothing",
+                custom_prompt=request if isinstance(request, str) else to_json(request), system_prompt=system,
                 inference_mode="images", max_frames=24, max_size=1280, seed=llm_seed, force_offload=True, save_states=False,
                 unique_id=unique_id, parameters=parameters, images=images, cache_image_analysis=images is None,
                 **{"输出think块": False})[0]
@@ -211,44 +346,59 @@ class H3I2VScene:
             return text
 
         target = {"image_number": 1, "label": LABEL, "role": "first", "note": ""}
-        text = ask(ANALYSIS_SYSTEM_PROMPT, {"task": "Define the attached image for its intended reference use.",
-                                            "instruction": instruction, "mode": "I2V", "target_image": target},
-                   prompt_parameters, [image])
-        analysis = LABEL + "\n" + re.sub(r"<Picture(?:\s+\d+)?>", LABEL, re.sub(r"<Subject\s+\d+>", "The referenced subject", text))
+        observed = ask(ANALYSIS_SYSTEM_PROMPT, {"task": "Define the attached image for its intended reference use.",
+                                                "instruction": instruction, "mode": "I2V", "target_image": target},
+                       prompt_parameters, [image])
+        no_subjects = re.sub(r"<Subject\s+\d+>", "The referenced subject", observed)
 
-        shots = [{"id": f"cut{i + 1}", "duration_seconds": s} for i, s in enumerate(seconds)]
-        scene_cuts = [{"index": i + 1, **shot} for i, shot in enumerate(shots)]
-
-        def request(story, selected=None):
-            partial = selected is not None
-            continuation = selected > 0 if partial else len(shots) > 1
-            value = {"mode": "I2V", "instruction": instruction, "story": story, "scene_story": "",
-                     "include_previous": continuation, "shared_prompt": ""}
-            if partial and continuation:
-                value.update(previous_prompt=shots[selected - 1].get("prompt", ""),
-                             previous_end_state=shots[selected - 1].get("end_state", ""))
-            cuts = []
-            for i, shot in enumerate(shots):
-                if partial and not (i == selected or continuation and i < selected):
-                    continue
-                cut = {"id": shot["id"], "duration_seconds": shot["duration_seconds"]}
-                if partial and continuation and i < selected:
-                    cut.update(prompt=shot.get("prompt", ""), start_state=shot.get("start_state"), end_state=shot.get("end_state"))
-                cuts.append(cut)
-            value.update(image_analysis=analysis, references=REFERENCES, selected_cut=selected + 1 if partial else None, cuts=cuts)
-            value["scene_story"] = story
-            value["scene_cuts"] = scene_cuts
-            return value, continuation
-
-        value, continuation = request("")
-        story = ask(writing_prompt("story", False, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_STORY, value, story_parameters)
-        for index in range(len(shots)):
-            value, continuation = request(story, index)
-            text = ask(writing_prompt("prompt", True, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_PROMPT, value, prompt_parameters)
+        if total > CUT_MAX:
+            # Like Director's whole-scene R2V: one request decides the cuts and writes every prompt.
+            analysis = re.sub(r"<Picture(?:\s+\d+)?>", "<Picture 1>", no_subjects)
+            # Several complete prompts need the llama-cpp node's maximum output (4096).
+            text = ask("", scene_prompt(total, instruction, Path(file).name, analysis), {**prompt_parameters, "max_tokens": 4096})
             try:
-                shots[index].update(read_cut(text, index + 1))
+                cuts, problems = read_scene(text)
             except ValueError as error:
-                raise ValueError(f"カット {index + 1}: {error}\n\nLLMの返答:\n{text}") from error
+                raise ValueError(f"{error}\n\nLLMの返答:\n{text}") from error
+            if problems:
+                raise ValueError("LLMの結果に問題があります：" + " ".join(problems) + f"\n\nLLMの返答:\n{text}")
+            shots = [{"id": f"cut{i + 1}", **cut} for i, cut in enumerate(cuts)]
+        else:
+            # Up to one cut's length, Director writes a single cut: story, then its prompt.
+            analysis = LABEL + "\n" + re.sub(r"<Picture(?:\s+\d+)?>", LABEL, no_subjects)
+            shots = [{"id": "cut1", "duration_seconds": total}]
+            scene_cuts = [{"index": i + 1, **shot} for i, shot in enumerate(shots)]
+
+            def request(story, selected=None):
+                partial = selected is not None
+                continuation = selected > 0 if partial else len(shots) > 1
+                value = {"mode": "I2V", "instruction": instruction, "story": story, "scene_story": "",
+                         "include_previous": continuation, "shared_prompt": ""}
+                if partial and continuation:
+                    value.update(previous_prompt=shots[selected - 1].get("prompt", ""),
+                                 previous_end_state=shots[selected - 1].get("end_state", ""))
+                cuts = []
+                for i, shot in enumerate(shots):
+                    if partial and not (i == selected or continuation and i < selected):
+                        continue
+                    cut = {"id": shot["id"], "duration_seconds": shot["duration_seconds"]}
+                    if partial and continuation and i < selected:
+                        cut.update(prompt=shot.get("prompt", ""), start_state=shot.get("start_state"), end_state=shot.get("end_state"))
+                    cuts.append(cut)
+                value.update(image_analysis=analysis, references=REFERENCES, selected_cut=selected + 1 if partial else None, cuts=cuts)
+                value["scene_story"] = story
+                value["scene_cuts"] = scene_cuts
+                return value, continuation
+
+            value, continuation = request("")
+            story = ask(writing_prompt("story", False, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_STORY, value, story_parameters)
+            for index in range(len(shots)):
+                value, continuation = request(story, index)
+                text = ask(writing_prompt("prompt", True, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_PROMPT, value, prompt_parameters)
+                try:
+                    shots[index].update(read_cut(text, index + 1))
+                except ValueError as error:
+                    raise ValueError(f"カット {index + 1}: {error}\n\nLLMの返答:\n{text}") from error
 
         plan = {"prompt_prefix": "", "shots": shots}
         scene = {"mode": "I2V", "assets": [{"kind": "image", "role": "first", "slot": 0, "file": file, "enabled": True, "note": ""}],
