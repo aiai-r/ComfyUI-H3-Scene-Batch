@@ -272,6 +272,28 @@ def stage_image(image):
     return target.relative_to(root).as_posix()
 
 
+class H3VideoPreview:
+    """Play a finished video file on the node, the way Context-Loop Assemble shows its result."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"video_path": ("STRING", {"forceInput": True})}}
+
+    RETURN_TYPES = ()
+    OUTPUT_NODE = True
+    FUNCTION = "preview"
+    CATEGORY = "H3 Scene Batch"
+
+    def preview(self, video_path):
+        path = Path(video_path).resolve()
+        root = Path(folder_paths.get_output_directory()).resolve()
+        if not path.is_file() or not path.is_relative_to(root):
+            raise ValueError(f"出力フォルダ内の動画が見つかりません: {video_path}")
+        relative = path.relative_to(root)
+        item = {"filename": relative.name, "subfolder": relative.parent.as_posix(), "type": "output"}
+        return {"ui": {"images": [item], "animated": (True,)}, "result": ()}
+
+
 class H3I2VScene:
     @classmethod
     def INPUT_TYPES(cls):
