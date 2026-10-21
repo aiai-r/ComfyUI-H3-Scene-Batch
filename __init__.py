@@ -19,6 +19,9 @@ NODE_CLASS_MAPPINGS.update(H3SceneSegmentSave=H3SceneSegmentSave, H3SceneAssembl
 NODE_DISPLAY_NAME_MAPPINGS.update(H3SceneSegmentSave="H3 Scene Segment Save", H3SceneAssemble="H3 Scene Assemble")
 NODE_CLASS_MAPPINGS['H3SceneLoopEnd'] = H3SceneLoopEnd
 NODE_DISPLAY_NAME_MAPPINGS['H3SceneLoopEnd'] = 'H3 Scene Loop End'
+from .i2v_scene import H3I2VScene
+NODE_CLASS_MAPPINGS['H3I2VScene'] = H3I2VScene
+NODE_DISPLAY_NAME_MAPPINGS['H3I2VScene'] = 'H3 I2V Scene (LLM)'
 
 WEB_DIRECTORY = "./web"
 
