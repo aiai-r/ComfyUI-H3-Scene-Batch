@@ -1,13 +1,15 @@
+import hashlib
 import json
 import re
-import shutil
 from pathlib import Path
 
 import comfy.model_management
 import folder_paths
 import nodes
+import numpy as np
+from PIL import Image
 
-from .director import H3SceneDirector, file_digest
+from .director import H3SceneDirector
 
 
 # Copied from web/director_llm.js so each image gets the same I2V requests as Scene Director.
@@ -151,15 +153,15 @@ def cut_seconds_list(text):
     return seconds
 
 
-def stage_image(image_path):
-    source = Path(str(image_path).strip())
-    if not source.is_file():
-        raise ValueError(f"画像が見つかりません: {image_path}")
+def stage_image(image):
+    # The video pipeline loads the first frame by filename from ComfyUI's input folder.
+    pixels = np.clip(255.0 * image[0].cpu().float().numpy(), 0, 255).astype(np.uint8)
+    digest = hashlib.sha256(str(pixels.shape).encode() + pixels.tobytes()).hexdigest()
     root = Path(folder_paths.get_input_directory()).resolve()
-    target = root / "h3_i2v_scene" / (file_digest(source)[:16] + source.suffix.lower())
+    target = root / "h3_i2v_scene" / f"{digest[:16]}.png"
     if not target.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        Image.fromarray(pixels).save(target)
     return target.relative_to(root).as_posix()
 
 
@@ -167,7 +169,7 @@ class H3I2VScene:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image_path": ("STRING", {"forceInput": True}),
+            "image": ("IMAGE",),
             "llama_model": ("LLAMACPPMODEL",),
             "story_parameters": ("LLAMACPPARAMS",),
             "prompt_parameters": ("LLAMACPPARAMS",),
@@ -190,11 +192,11 @@ class H3I2VScene:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def build(self, image_path, llama_model, story_parameters, prompt_parameters, width, height, steps, base_seed,
+    def build(self, image, llama_model, story_parameters, prompt_parameters, width, height, steps, base_seed,
               instruction, cut_seconds, llm_seed, prompt=None, unique_id=None):
         seconds = cut_seconds_list(cut_seconds)
-        file = stage_image(image_path)
-        image = nodes.LoadImage().load_image(file)[0]
+        image = image[:1]
+        file = stage_image(image)
         instruct = nodes.NODE_CLASS_MAPPINGS["llama_cpp_instruct_adv"]()
 
         def ask(system, request, parameters, images=None):
