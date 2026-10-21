@@ -59,10 +59,9 @@ SELF_CONTAINED = "Write a self-contained H3 prompt for this cut. There is no pre
 
 WHOLE_SCENE = "This is a whole-scene workflow. Preserve the user's complete action sequence across scene_cuts, respecting each cut's supplied duration. Never fit the entire scene into each cut."
 WHOLE_SCENE_STORY = "Plan ALL cuts together from the current instruction. Use one labeled section per supplied cut, including its index, ID, duration, starting state, paced actions/camera, ending state, exact assigned dialogue or no speech, voice-reference mapping and sound restrictions. Decide how much action fits each duration; cover every requested event in order without duplication or omissions. Honor explicit timing such as an initial silent interval. Return the complete editable allocation in the instruction's language."
-WHOLE_SCENE_PROMPT = "The story is the whole-scene allocation. Write ONLY selected_cut using its assigned events and duration, not events assigned to later cuts. Preserve its exact dialogue, speaker-to-audio mapping and sound restrictions in the actual prompt. For continuation cuts, begin the scene description with the concrete ending situation from previous_end_state and previous_prompt, then advance the assigned action; do not repeat completed dialogue or actions. This continuity must be in prompt itself, not just start_state."
 
 LABEL = "first frame"
-REFERENCES = [{"asset_index": 0, "label": LABEL, "kind": "image", "note": "", "image_attached": False}]
+REFERENCES = [{"asset_index": 0, "label": "<Picture 1>", "kind": "image", "note": "", "image_attached": False}]
 
 # Whole-scene I2V: short_storygen_h3's AI-planned Contex-Loop request for I2V (core/h3_prompter.py
 # _build_auto_plan_chain_prompt), plus the clip-count rules Scene Director added to its R2V copy.
@@ -71,6 +70,34 @@ REFERENCE_HANDLING_RULE = "The original images are not attached to this generati
 # Official base-mode (T2VA/I2VA/FL2VA/L2VA) writing guide, copied verbatim from
 # ComfyUI-MiniMaxH3-Easy prompt_guides/h3_general/references/base-en.txt (MIT, nkxx188).
 BASE_GUIDE = (Path(__file__).parent / "h3_base_guide.txt").read_text(encoding="utf-8").strip()
+# The guide's fixed I2VA first line and three core fields.
+I2V_ALIGNMENT = "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced."
+I2V_SECTIONS = ["integrated_multimodal_description", "overall_soundscape", "non_diegetic_music"]
+
+# One cut at or under 15 seconds: same request layout as Director's R2V prompt stage, with the I2VA guide.
+I2V_PROMPT_SYSTEM_PROMPT = "\n".join([
+    "The input is a JSON request from a scene editor. instruction is the user's direct instruction. story, when not empty, is the finalized scene plot. image_analysis holds the saved description of <Picture 1>, the first frame of the video. Write the H3 prompt for the one cut in cuts, using its duration_seconds. Convert the input to the H3 format below. Preserve the planned action order, staging, duration, dialogue and audio constraints. Do not brainstorm a different story.",
+    "",
+    "You rewrite Japanese or English user instructions into a MiniMax H3 I2VA (image-to-video) prompt. Return only the first-frame instruction line, one blank line and the three plain-text core fields specified below, with no Markdown fence, preface, or commentary.",
+    "",
+    "The following is the supplied official writing guide. Apply its I2VA rules to the current request; its examples are format examples, not facts about the input image.",
+    "",
+    BASE_GUIDE,
+])
+
+
+def format_problems(prompt, number):
+    """Report where a cut's prompt leaves the guide's I2VA (cut 1) or T2VA (later cuts) format."""
+    problems = []
+    lines = [line.strip() for line in prompt.strip().splitlines() if line.strip()]
+    if number == 1 and (not lines or lines[0] != I2V_ALIGNMENT):
+        problems.append("カット 1 の1行目が公式のI2Vの一文になっていません。")
+    if number > 1 and "<Picture 1>" in prompt:
+        problems.append(f"カット {number} で <Picture 1> を参照しています（画像が渡るのはカット1だけです）。")
+    found = [m.group(1).lower() for m in re.finditer(r"^\s*([a-z_]+)\s*:", prompt, re.I | re.M) if m.group(1).lower() in I2V_SECTIONS]
+    if found != I2V_SECTIONS:
+        problems.append(f"カット {number} のPromptに公式の3項目が順番どおり揃っていません。")
+    return problems
 
 
 def scene_prompt(total, instruction, filename, analysis):
@@ -110,6 +137,8 @@ CLIP PLANNING RULES (MANDATORY):
 7. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
 8. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
 9. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
+10. **Clip 1 is I2VA**: <Picture 1> is attached only to Clip 1 as its first frame. Write Clip 1 in the guide's I2VA format: its first line MUST be exactly `{I2V_ALIGNMENT}`, followed by one blank line and the three core fields.
+11. **Clip 2 and later are T2VA continuations**: no picture is attached to them; each one continues from the previous clip's final frames. Write them in the guide's T2VA format: the three core fields only, with no image-alignment line and no <Picture 1> reference; describe subjects in words. Begin integrated_multimodal_description with a brief concrete description of the previous clip's planned ending state (subjects, wardrobe, positions, pose, held objects, ongoing motion, camera direction and sound), then continue the unfinished action from that state. Summarize the ending, not the earlier plot; do not restart completed actions or repeat dialogue.
 
 =======================================================
 OUTPUT FORMAT:
@@ -129,6 +158,8 @@ Output one block per clip under `### Part 2`, in order. The header of each block
 
 === SCENE 1 (duration: 9s) ===
 ```text
+{I2V_ALIGNMENT}
+
 integrated_multimodal_description: [Shot 1] ...
 overall_soundscape: ...
 non_diegetic_music: ...
@@ -136,7 +167,7 @@ non_diegetic_music: ...
 
 === SCENE 2 (duration: 13s) ===
 ```text
-integrated_multimodal_description: [Shot 1] Continue the unfinished action from the previous clip...
+integrated_multimodal_description: [Shot 1] At the end of the previous clip, ... Continue the unfinished action from the previous clip...
 overall_soundscape: ...
 non_diegetic_music: ...
 ```
@@ -202,6 +233,7 @@ def read_scene(text):
         elif seconds < CUT_MIN or seconds > CUT_MAX:
             problems.append(f"カット {index} が{seconds}秒です（1カットは{CUT_MIN}〜{CUT_MAX}秒）。")
         prompt = scene_timestamps(re.sub(r"^(\s*)non-diegetic_music\s*:", r"\1non_diegetic_music:", body, count=1, flags=re.I | re.M), seconds, start)
+        problems.extend(format_problems(prompt, index))
         start += seconds
         cuts.append({"prompt": prompt, "duration_seconds": seconds})
     return cuts, problems
@@ -226,61 +258,6 @@ def writing_prompt(action, partial, continuation):
 
 def to_json(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def repair_newlines(text):
-    result, in_string, escaped, index = "", False, False, 0
-    while index < len(text):
-        char = text[index]
-        if in_string and char in "\r\n":
-            if escaped:
-                result = result[:-1]
-            result += "\\n"
-            escaped = False
-            if char == "\r" and text[index + 1:index + 2] == "\n":
-                index += 1
-        else:
-            result += char
-            if escaped:
-                escaped = False
-            elif in_string and char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = not in_string
-        index += 1
-    return result
-
-
-def read_cut(text, number):
-    """Read one cut like Director's readDraft for a selected cut."""
-    content = re.sub(r"\s*```\Z", "", re.sub(r"\A```(?:json|text)?\s*", "", text.strip(), flags=re.I))
-    if re.match(r"subject_definitions\s*:", content, re.I):
-        return {"prompt": content, "start_state": "", "end_state": ""}
-    try:
-        source = json.loads(content)
-    except json.JSONDecodeError:
-        repaired = repair_newlines(re.sub(r'([{,]\s*)""(shots|id|prompt|start_state|end_state)"\s*:', r'\1"\2":', content))
-        try:
-            source = json.loads(repaired)
-        except json.JSONDecodeError:
-            fields = re.findall(r'[{,]\s*"(prompt|start_state|end_state)"\s*:\s*("(?:\\.|[^"\\])*")(?=\s*[,}\]]|\s*\Z)', repaired)
-            if len(re.findall(r'[{,]\s*"prompt"\s*:', repaired)) != 1 or [key for key, _ in fields].count("prompt") != 1:
-                raise ValueError("LLMの返答から完全なPromptを取り出せませんでした。")
-            cut = {}
-            for key, value in fields:
-                try:
-                    cut[key] = json.loads(value)
-                except json.JSONDecodeError:
-                    pass
-            source = {"shots": [cut]}
-    shots = source.get("shots") if isinstance(source, dict) else None
-    if not isinstance(shots, list) or len(shots) != 1:
-        raise ValueError("LLMのカット数が指定と一致しません。")
-    cut = shots[0]
-    if not isinstance(cut, dict) or not isinstance(cut.get("prompt"), str) or not cut["prompt"].strip():
-        raise ValueError(f"カット {number} のIDまたはPromptが不正です。")
-    text_of = lambda value: "" if value is None else value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    return {"prompt": cut["prompt"], "start_state": text_of(cut.get("start_state")), "end_state": text_of(cut.get("end_state"))}
 
 
 def stage_image(image):
@@ -364,8 +341,8 @@ class H3I2VScene:
                 raise ValueError("LLMの結果に問題があります：" + " ".join(problems) + f"\n\nLLMの返答:\n{text}")
             shots = [{"id": f"cut{i + 1}", **cut} for i, cut in enumerate(cuts)]
         else:
-            # Up to one cut's length, Director writes a single cut: story, then its prompt.
-            analysis = LABEL + "\n" + re.sub(r"<Picture(?:\s+\d+)?>", LABEL, no_subjects)
+            # Up to one cut's length: Director's story request, then the prompt written with the official I2VA guide.
+            analysis = re.sub(r"<Picture(?:\s+\d+)?>", "<Picture 1>", no_subjects)
             shots = [{"id": "cut1", "duration_seconds": total}]
             scene_cuts = [{"index": i + 1, **shot} for i, shot in enumerate(shots)]
 
@@ -392,13 +369,13 @@ class H3I2VScene:
 
             value, continuation = request("")
             story = ask(writing_prompt("story", False, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_STORY, value, story_parameters)
-            for index in range(len(shots)):
-                value, continuation = request(story, index)
-                text = ask(writing_prompt("prompt", True, continuation) + "\n" + WHOLE_SCENE + "\n" + WHOLE_SCENE_PROMPT, value, prompt_parameters)
-                try:
-                    shots[index].update(read_cut(text, index + 1))
-                except ValueError as error:
-                    raise ValueError(f"カット {index + 1}: {error}\n\nLLMの返答:\n{text}") from error
+            value, _ = request(story, 0)
+            text = ask(I2V_PROMPT_SYSTEM_PROMPT, value, prompt_parameters)
+            written = re.sub(r"\s*```\Z", "", re.sub(r"\A```(?:text|markdown)?\s*", "", text.strip(), flags=re.I))
+            problems = format_problems(written, 1)
+            if problems:
+                raise ValueError("LLMの結果に問題があります：" + " ".join(problems) + f"\n\nLLMの返答:\n{text}")
+            shots[0]["prompt"] = written
 
         plan = {"prompt_prefix": "", "shots": shots}
         scene = {"mode": "I2V", "assets": [{"kind": "image", "role": "first", "slot": 0, "file": file, "enabled": True, "note": ""}],
