@@ -348,8 +348,8 @@ def r2v_scene_prompt(total, instruction, images):
         + (", ".join(f"<Subject {n}>" for n in i["subjects"]) + " Reference" if i["subjects"] else f"<Picture {i['number']}> Reference")
         + f"; User Note = {i['note'] or 'none'}; Saved Visual Analysis = {to_json({'description': i['analysis']})}"
         for i in images) if images else "No reference images supplied."
-    rules = ("10. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line \"<Audio N> is the voice-timbre reference for <Subject N> (Sx).\" even when nobody speaks in that clip, with the matching \"<Audio N>: reference - ...\" line in retention_analysis. "
-             "Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.")
+    rules = ("10. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music). Define only the subjects and audio/video references actually used in that clip, preserving their declared roles. "
+             "For voice references used in the clip, preserve the user's subject-to-audio mapping and keep each speaker's (Sx) stable across clips. Never shorten later clips to only detailed_description.")
     second = R2V_SECTIONS_EXAMPLE.replace("[Shot 1] ...", "Describe the previous clip's ending situation, then advance the next action...\n[Shot 1] ...", 1)
     return plan_prompt(total, "R2V (Base Mode: R2V (Reference-to-Video). Maintain character/subject identities (<Subject 1>, etc.) consistently across all scenes.)",
                        images_context, user_instruction, H3_REF_GUIDE, rules, R2V_SECTIONS_EXAMPLE, second)
