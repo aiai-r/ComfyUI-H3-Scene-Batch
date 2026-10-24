@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { H3_BASE_GUIDE } from "./web/h3_base_guide.js";
+import { H3_REF_GUIDE } from "./web/h3_ref_guide.js";
 import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, scenePrompt, normalizeMediaReferences } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
@@ -14,6 +16,24 @@ const scene = { mode: "R2V", assets: [
   { kind: "audio", file: "sound.wav", note: "Ambient" },
   { kind: "image", role: "last", file: "last.png" },
 ] };
+for (const mode of ['T2V', 'I2V', 'L2V', 'FL2V', 'R2V']) {
+  const output = draftGraph(config, { ...scene, mode }, plan, 'prompt', '庭を歩く', '女性が庭を歩き、門を開ける。', 1);
+  const system = output.writer.inputs.system_prompt;
+  assert.ok(system.includes(mode === 'R2V' ? H3_REF_GUIDE : H3_BASE_GUIDE), `${mode} receives its complete official guide`);
+  assert.ok(!system.includes(mode === 'R2V' ? H3_BASE_GUIDE : H3_REF_GUIDE), `${mode} does not receive the other guide`);
+  assert.equal(JSON.parse(output.writer.inputs.custom_prompt).story, '女性が庭を歩き、門を開ける。');
+  assert.doesNotMatch(system, /Before returning, check that every utterance/);
+  const storySystem = draftGraph(config, { ...scene, mode }, plan, 'story', '庭を歩く', '', 0).writer.inputs.system_prompt;
+  assert.ok(!storySystem.includes(H3_BASE_GUIDE) && !storySystem.includes(H3_REF_GUIDE), 'Story writing does not receive the video format guide');
+  const text = mode === 'R2V'
+    ? 'subject_definitions:\n<Subject 1> is a woman.\n\nsummary:\n[reference generation] A walk.\n\nretention_analysis:\n<Subject 1>: fully_preserved.\n\ndetailed_description:\n[Shot 1] The woman opens the gate.\n\noverall_soundscape:\nFootsteps.\n\nnon_diegetic_music:\nN/A'
+    : ({ T2V: '', I2V: 'For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n\n', L2V: 'How the reference pictures align with the target video — <Picture 1> (from [Shot 1]) aligns with the 15.00-second mark of the target video.\n\n', FL2V: 'How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 1) aligns with the 15.00-second mark of the target video.\n\n' }[mode]) + 'integrated_multimodal_description: [Shot 1] The woman opens the gate.\n\noverall_soundscape: Footsteps.\n\nnon_diegetic_music: N/A';
+  if (mode === 'FL2V') assert.equal(JSON.parse(output.writer.inputs.custom_prompt).last_frame_cut, 2);
+  const reply = text;
+  const drafts = readDraft(reply, plan, 1);
+  const applied = applyDraft(plan, structuredClone(plan), drafts);
+  assert.equal(applied.shots[1].prompt, text, 'Official-format prompt text survives parsing and application unchanged');
+}
 const before = structuredClone({ config, plan, scene });
 // ComfyUI exposes node properties through reactive proxies in the browser.
 const reactive = value => new Proxy(value, { get(target, key) {
@@ -57,7 +77,7 @@ for (const mode of ['I2V', 'T2V', 'FL2V', 'L2V']) {
   assert.doesNotMatch(next.writer.inputs.custom_prompt, /start_state|end_state|Woman holds/);
   assert.doesNotMatch(next.writer.inputs.system_prompt, /start_state|end_state/);
   assert.match(next.writer.inputs.system_prompt, /Read previous_prompt/);
-  assert.match(next.writer.inputs.system_prompt, /"prompt":"English H3 prompt"/);
+  assert.match(next.writer.inputs.system_prompt, /three plain-text core fields/);
 }
 const first = draftGraph(config, scene, threeCuts, "prompt", "Start", "", 0);
 assert.equal(JSON.parse(first.writer.inputs.custom_prompt).previous_prompt, undefined);
@@ -218,6 +238,12 @@ assert.match(referenceDefinitions([{label:'<Picture 1>',text:'<Subject 1> is Ali
 const sections = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
 for (const [action, mode] of [['story', 'R2V'], ['prompt', 'T2V']]) for (const selected of [null, 0, 1]) {
   const system = draftGraph(config, { ...scene, mode }, plan, action, '最初は無言。そのあと「こんにちは」と言う。環境音のみ。BGMなし。', '', selected).writer.inputs.system_prompt;
+  if (action === 'prompt') {
+    assert.ok(system.includes(H3_BASE_GUIDE));
+    assert.match(system, /Preserve every original word and punctuation mark verbatim/);
+    assert.doesNotMatch(system, /With 環境音のみ,/);
+    continue;
+  }
   assert.match(system, /Japanese quotation marks 「」/);
   assert.match(system, /first-person camera or 一人称視点 does not imply a spoken monologue/);
   assert.match(system, /specified people and time intervals/);
