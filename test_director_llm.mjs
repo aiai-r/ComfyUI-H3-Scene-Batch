@@ -42,6 +42,18 @@ for (const max_tokens of [1024, 2048, 3072, 4096]) {
   assert.equal(graph.parameters.inputs.max_tokens, max_tokens, 'Whole-scene generation uses the configured output limit');
   assert.deepEqual(settings, beforeSettings, 'Request construction preserves the saved LLM settings');
 }
+for (const mode of ['T2V', 'I2V', 'L2V', 'FL2V', 'R2V']) for (const selected of [0, 1, null]) {
+  const graph = draftGraph(config, { ...scene, mode }, plan, 'story', '女性が門を開ける。「どうぞ」と言う。BGMなし。', '', selected);
+  const system = graph.writer.inputs.system_prompt;
+  assert.match(system, /Return a concise editable story outline in the language of the instruction/);
+  assert.match(system, /preserve the supplied cut count, order and durations/);
+  assert.doesNotMatch(system, /subject_definitions|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music|prompt field|H3 prompt|in each prompt|Return ONLY JSON/);
+  assert.equal(graph.parameters.inputs.max_tokens, config.story.parameters.max_tokens);
+  if (selected === 1) {
+    assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).previous_prompt, plan.shots[0].prompt);
+    assert.match(system, /preceding cut's ending situation from previous_prompt/);
+  }
+}
 const before = structuredClone({ config, plan, scene });
 // ComfyUI exposes node properties through reactive proxies in the browser.
 const reactive = value => new Proxy(value, { get(target, key) {
@@ -252,14 +264,10 @@ for (const [action, mode] of [['story', 'R2V'], ['prompt', 'T2V']]) for (const s
     assert.doesNotMatch(system, /With 環境音のみ,/);
     continue;
   }
-  assert.match(system, /Japanese quotation marks 「」/);
-  assert.match(system, /first-person camera or 一人称視点 does not imply a spoken monologue/);
+  assert.match(system, /Preserve requested dialogue verbatim/);
   assert.match(system, /specified people and time intervals/);
-  assert.match(system, /except dialogue explicitly requested for this cut/);
-  if (mode === 'R2V') assert.match(system, /<Audio 1> is the voice-timbre reference for <Subject 1> \(S1\)/);
-  assert.match(system, /discard that addition/);
-  assert.equal(system.split('With 環境音のみ,').length, 2, 'One shared sound policy per request');
-  assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
+  assert.match(system, /audio-reference roles and speaker mapping/);
+  assert.doesNotMatch(system, /subject_definitions|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music|prompt field|in each prompt|Return ONLY JSON/);
 }
 const r2vSystem = draftGraph(config, scene, plan, 'prompt', '無言。環境音のみ。BGMなし。', '', 0).writer.inputs.system_prompt;
 for (const heading of sections) assert.ok(r2vSystem.includes(heading + ':'));
