@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { H3_BASE_GUIDE } from "./web/h3_base_guide.js";
 import { H3_REF_GUIDE } from "./web/h3_ref_guide.js";
-import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, scenePrompt, normalizeMediaReferences } from "./web/director_llm.js";
+import { draftGraph, readDraft, applyDraft, referenceDescriptions, imageAnalysisKey, referenceDefinitions, SYSTEM_PROMPTS, readScene, scenePrompt, sceneGraph, normalizeMediaReferences } from "./web/director_llm.js";
 
 const config = { loader: { model: "existing.gguf", n_ctx: 32768 },
   story: { inputs: { seed: 42, cache_image_analysis: true, force_offload: true }, parameters: { temperature: 0.6 } },
@@ -33,6 +33,14 @@ for (const mode of ['T2V', 'I2V', 'L2V', 'FL2V', 'R2V']) {
   const drafts = readDraft(reply, plan, 1);
   const applied = applyDraft(plan, structuredClone(plan), drafts);
   assert.equal(applied.shots[1].prompt, text, 'Official-format prompt text survives parsing and application unchanged');
+}
+for (const max_tokens of [1024, 2048, 3072, 4096]) {
+  const settings = structuredClone(config);
+  settings.prompt.parameters.max_tokens = max_tokens;
+  const beforeSettings = structuredClone(settings);
+  const graph = sceneGraph(settings, 60, '庭を歩く', '', []);
+  assert.equal(graph.parameters.inputs.max_tokens, max_tokens, 'Whole-scene generation uses the configured output limit');
+  assert.deepEqual(settings, beforeSettings, 'Request construction preserves the saved LLM settings');
 }
 const before = structuredClone({ config, plan, scene });
 // ComfyUI exposes node properties through reactive proxies in the browser.

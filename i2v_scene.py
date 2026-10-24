@@ -557,8 +557,7 @@ class H3I2VScene:
                 request_text, check = r2v_scene_prompt(total, instruction, images), r2v_problems
             else:
                 request_text, check = scene_prompt(total, instruction, Path(file).name, analysis), format_problems
-            # Several complete prompts need the llama-cpp node's maximum output (4096).
-            text = ask("", request_text, {**prompt_parameters, "max_tokens": 4096})
+            text = ask("", request_text, prompt_parameters)
             try:
                 cuts, problems = read_scene(text, check)
             except ValueError as error:

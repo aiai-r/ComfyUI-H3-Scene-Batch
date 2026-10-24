@@ -166,8 +166,6 @@ Continue with \`=== SCENE 3 (duration: Xs) ===\` and so on until the story is fi
 export function sceneGraph(config, totalSeconds, instruction, story, images) {
   if (!config?.loader || !config?.prompt) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
   const parameters = JSON.parse(JSON.stringify(config.prompt.parameters));
-  // Several complete six-section prompts need the llama-cpp node's maximum output (4096).
-  parameters.max_tokens = 4096;
   return {
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
     parameters: { class_type: "llama_cpp_parameters", inputs: parameters },
