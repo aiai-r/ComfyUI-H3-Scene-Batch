@@ -178,32 +178,6 @@ Continue with `=== SCENE 3 (duration: Xs) ===` and so on until the story is fini
 """
 
 
-def js_round(value):
-    return math.floor(value + 0.5)
-
-
-def scene_timestamps(prompt, length, offset):
-    """Director's sceneTimestamps: fold a clip written on the story timeline back to 0s."""
-    pattern = re.compile(r"(At\s+)(?:(\d{1,2}):)?(\d{2})\.(\d{3})", re.I)
-    value = lambda m: (int(m.group(2)) if m.group(2) else 0) * 60 + int(m.group(3)) + int(m.group(4)) / 1000
-    found = [value(m) for m in pattern.finditer(prompt)]
-    cumulative = bool(found) and offset > 0 and any(v >= length for v in found) and all(v >= offset for v in found)
-
-    def fold(m):
-        total = value(m)
-        if cumulative:
-            relative = total - offset
-        elif total >= length:
-            relative = total - offset if offset > 0 and total >= offset else math.fmod(total, length)
-        else:
-            return m.group(0)
-        if relative >= length:
-            relative = max(length - 0.5, 0)
-        relative = max(relative, 0)
-        return f"{m.group(1)}{math.floor(relative / 60):02d}:{math.floor(math.fmod(relative, 60)):02d}.{js_round(math.fmod(relative, 1) * 1000):03d}"
-    return pattern.sub(fold, prompt)
-
-
 SCENE_HEADER = re.compile(
     r"(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*(\d+)([^=\n*\]]*)(?:===|\]|\*\*)?\s*"
     r"(?:```(?:text|markdown)?\s*\n([\s\S]*?)\n```|(?=\n(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*\d+|\Z))", re.I)
@@ -226,7 +200,7 @@ def read_scene(text, check=format_problems):
                if re.search(r"integrated_multimodal_description|\[Shot|overall_soundscape|subject_definitions", m.group(1))]
     if not raw:
         raise ValueError("LLMの返答からカットを読み取れませんでした。")
-    problems, cuts, start = [], [], 0
+    problems, cuts = [], []
     for index, (body, declared) in enumerate(raw, 1):
         seconds = CUT_MAX if declared is None else float(declared)
         seconds = int(seconds) if float(seconds).is_integer() else seconds
@@ -234,9 +208,8 @@ def read_scene(text, check=format_problems):
             problems.append(f"カット {index} の秒数が書かれていません（{CUT_MAX}秒として入れました）。")
         elif seconds < CUT_MIN or seconds > CUT_MAX:
             problems.append(f"カット {index} が{seconds}秒です（1カットは{CUT_MIN}〜{CUT_MAX}秒）。")
-        prompt = scene_timestamps(re.sub(r"^(\s*)non-diegetic_music\s*:", r"\1non_diegetic_music:", body, count=1, flags=re.I | re.M), seconds, start)
+        prompt = re.sub(r"^(\s*)non-diegetic_music\s*:", r"\1non_diegetic_music:", body, count=1, flags=re.I | re.M)
         problems.extend(check(prompt, index))
-        start += seconds
         cuts.append({"prompt": prompt, "duration_seconds": seconds})
     return cuts, problems
 

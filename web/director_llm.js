@@ -177,24 +177,6 @@ export function sceneGraph(config, totalSeconds, instruction, story, images) {
   };
 }
 
-// short_storygen_h3 normalize_scene_timestamps: fold a clip written on the story timeline back to 0s.
-function sceneTimestamps(prompt, length, offset) {
-  const pattern = /(At\s+)(?:(\d{1,2}):)?(\d{2})\.(\d{3})/gi;
-  const value = m => (m[2] ? Number(m[2]) : 0) * 60 + Number(m[3]) + Number(m[4]) / 1000;
-  const found = [...prompt.matchAll(pattern)].map(value);
-  const cumulative = found.length > 0 && offset > 0 && found.some(v => v >= length) && found.every(v => v >= offset);
-  return prompt.replace(pattern, (...m) => {
-    const total = value(m);
-    let relative;
-    if (cumulative) relative = total - offset;
-    else if (total >= length) relative = offset > 0 && total >= offset ? total - offset : total % length;
-    else return m[0];
-    if (relative >= length) relative = Math.max(length - 0.5, 0);
-    relative = Math.max(relative, 0);
-    return `${m[1]}${String(Math.floor(relative / 60)).padStart(2, "0")}:${String(Math.floor(relative % 60)).padStart(2, "0")}.${String(Math.round((relative % 1) * 1000)).padStart(3, "0")}`;
-  });
-}
-
 const SECTIONS = ["subject_definitions", "summary", "retention_analysis", "detailed_description", "overall_soundscape", "non_diegetic_music"];
 
 // Parse like short_storygen_h3 _parse_chain_scenes, but keep the LLM's own clip lengths and report problems.
@@ -218,15 +200,13 @@ export function readScene(text, totalSeconds, action) {
   }
   if (!raw.length) throw new Error("LLMの返答からカットを読み取れませんでした。再作成してください。");
   const problems = [];
-  let start = 0;
   const cuts = raw.map(({ body, declared }, index) => {
     const seconds = declared == null ? SCENE_CUT_SECONDS.max : Number(declared);
     if (declared == null) problems.push(`カット ${index + 1} の秒数が書かれていません（${SCENE_CUT_SECONDS.max}秒として入れました）。`);
     else if (seconds < SCENE_CUT_SECONDS.min || seconds > SCENE_CUT_SECONDS.max) problems.push(`カット ${index + 1} が${seconds}秒です（1カットは${SCENE_CUT_SECONDS.min}〜${SCENE_CUT_SECONDS.max}秒）。`);
-    const prompt = sceneTimestamps(body.replace(/^(\s*)non-diegetic_music\s*:/im, "$1non_diegetic_music:"), seconds, start);
+    const prompt = body.replace(/^(\s*)non-diegetic_music\s*:/im, "$1non_diegetic_music:");
     const found = [...prompt.matchAll(/^\s*([a-z_]+)\s*:/gim)].map(m => m[1].toLowerCase()).filter(name => SECTIONS.includes(name));
     if (found.join() !== SECTIONS.join()) problems.push(`カット ${index + 1} のPromptに公式の6項目が順番どおり揃っていません。`);
-    start += seconds;
     return { prompt, duration_seconds: seconds };
   });
   return { story, cuts, problems };

@@ -275,11 +275,17 @@ assert.equal(planned.story, '| Clip 1 | 15秒 | 勉強 |');
 assert.deepEqual(planned.cuts.map(c => c.duration_seconds), [15, 10, 20], 'The LLM cut lengths are kept as written');
 assert.deepEqual(planned.problems, ['カット 3 が20秒です（1カットは4〜15秒）。']);
 assert.match(planned.cuts[0].prompt, /\[Shot 2\] At 00:08\.000, he watches\./, 'Cut-local times stay unchanged');
-assert.match(planned.cuts[1].prompt, /\[Shot 2\] At 00:04\.500, he speaks\./, 'Scene-wide times restart at the cut, as in short_storygen_h3');
+assert.equal(planned.cuts[1].prompt, cutPrompt('[Shot 1] Close-up. [Shot 2] At 00:19.500, he speaks.'), 'Do not subtract earlier cut lengths from the LLM timeline');
+assert.equal(planned.cuts[2].prompt, cutPrompt('[Shot 1] He reaches. [Shot 2] At 00:30.000, she smiles.'), 'Do not wrap or clamp out-of-range timestamps');
 assert.deepEqual(readScene(sceneReply.replace('summary:\nOne cut.\n\n', ''), 45, 'all').problems.filter(p => p.includes('6項目')).length, 1);
 assert.deepEqual(readScene(sceneReply.replace('(duration: 20s)', '(duration: 15s)'), 45, 'all').problems, [], 'The requested total is a target; the LLM total is accepted');
 assert.equal(readScene(sceneReply, 45, 'story').story, '| Clip 1 | 15秒 | 勉強 |');
 assert.deepEqual([...normalizeMediaReferences('画像1は音声1、画像3は音声2').found], ['<Picture 1>', '<Audio 1>', '<Picture 3>', '<Audio 2>']);
+for (const time of ['00:00.000', '00:15.000', '00:20.000', '01:03.456', '20.000']) {
+  const body = `[Shot 1] She waits. [Shot 2] At ${time}, she opens the gate and says <d>[Japanese] どうぞ。</d>`;
+  const reply = [...block(1, 15, body), ...block(2, 15, body)].join('\n');
+  assert.deepEqual(readScene(reply, 30, 'prompt').cuts.map(c => c.prompt), [cutPrompt(body), cutPrompt(body)], 'Keep the complete action, dialogue and timestamps exactly as generated');
+}
 const request = scenePrompt(60, '画像1は音声1を使う。', '', [{ number: 1, filename: 'woman.png', note: '', analysis: '<Subject 1> is the woman shown in <Picture 1>.' }]);
 assert.match(request, /Total Runtime: EXACTLY 60\.00 seconds\./);
 assert.match(request, /- <Picture 1> \(woman\.png\): Assigned Role = <Picture 1> Reference; User Note = none; Saved Visual Analysis = \{"description":"<Subject 1> is the woman shown in <Picture 1>\."\}/);
