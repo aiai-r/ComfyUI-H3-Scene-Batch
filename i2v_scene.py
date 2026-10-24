@@ -115,8 +115,7 @@ def scene_prompt(total, instruction, filename, analysis):
 def plan_prompt(total, base_mode, images_context, user_instruction, guide, extra_rules, first_example, second_example):
     """short_storygen_h3's AI-planned Contex-Loop request with Director's clip-count rules; modes differ only in the arguments."""
     min_str, max_str, total_str = f"{CUT_MIN:.2f}", f"{CUT_MAX:.2f}", f"{total:.2f}"
-    # One clip more than the bare minimum, so unequal lengths still fit under the per-clip maximum.
-    min_clips = max(1, min(math.ceil(total / CUT_MAX) + 1, math.floor(total / CUT_MIN)))
+    min_clips = max(1, min(math.ceil(total / CUT_MAX), math.floor(total / CUT_MIN)))
     return f"""You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
 Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
 
@@ -141,13 +140,12 @@ USER-PROVIDED MINIMAX H3 GUIDE:
 CLIP PLANNING RULES (MANDATORY):
 1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between {min_str} and {max_str} seconds. State it as a whole or half second value.
 2. **Exact total**: the sum of every declared clip length MUST equal exactly {total_str} seconds.
-3. **Minimum clip count**: use AT LEAST {min_clips} clips. Fewer clips cannot reach {total_str} seconds while every clip stays at or under {max_str} seconds with unequal lengths.
+3. **Minimum clip count**: use AT LEAST {min_clips} clips. Fewer clips cannot reach {total_str} seconds while every clip stays at or under {max_str} seconds.
 4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed {max_str}, add one more clip instead of lengthening the last clip. Never make any clip longer than {max_str} seconds to reach the total.
-5. **Do NOT give every clip the same length.** Match each clip's length to the weight of what happens inside it: a quiet beat can be {min_str}-6 seconds, a long continuous action can run up to {max_str} seconds.
-6. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
-7. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
-8. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
-9. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
+5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
+6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
+7. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
+8. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
 {extra_rules}
 
 =======================================================

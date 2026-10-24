@@ -95,8 +95,7 @@ const REFERENCE_HANDLING_RULE = "The original images are not attached to this ge
 export function scenePrompt(totalSeconds, instruction, story, images) {
   const { min, max } = SCENE_CUT_SECONDS;
   const minStr = seconds2(min), maxStr = seconds2(max), totalStr = seconds2(totalSeconds);
-  // One clip more than the bare minimum, so unequal lengths still fit under the per-clip maximum.
-  const minClips = Math.max(1, Math.min(Math.ceil(totalSeconds / max) + 1, Math.floor(totalSeconds / min)));
+  const minClips = Math.max(1, Math.min(Math.ceil(totalSeconds / max), Math.floor(totalSeconds / min)));
   const { text, found } = normalizeMediaReferences([instruction, story].filter(s => s.trim()).join("\n\nAPPROVED STORY ALLOCATION:\n"));
   const userInstruction = `${mediaManifest(found, images)}\n\nUSER DIRECTION:\n${text.trim()}`;
   const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = ${i.subjects?.length ? `${i.subjects.map(n => `<Subject ${n}>`).join(", ")} Reference` : `<Picture ${i.number}> Reference`}; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
@@ -126,14 +125,13 @@ ${H3_REF_GUIDE}
 CLIP PLANNING RULES (MANDATORY):
 1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between ${minStr} and ${maxStr} seconds. State it as a whole or half second value.
 2. **Exact total**: the sum of every declared clip length MUST equal exactly ${totalStr} seconds.
-3. **Minimum clip count**: use AT LEAST ${minClips} clips. Fewer clips cannot reach ${totalStr} seconds while every clip stays at or under ${maxStr} seconds with unequal lengths.
+3. **Minimum clip count**: use AT LEAST ${minClips} clips. Fewer clips cannot reach ${totalStr} seconds while every clip stays at or under ${maxStr} seconds.
 4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed ${maxStr}, add one more clip instead of lengthening the last clip. Never make any clip longer than ${maxStr} seconds to reach the total.
-5. **Do NOT give every clip the same length.** Match each clip's length to the weight of what happens inside it: a quiet beat can be ${minStr}-6 seconds, a long continuous action can run up to ${maxStr} seconds.
-6. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
-7. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
-8. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
-9. **Dialogue**: wrap spoken dialogue in \`<d>[Japanese] ...</d>\` with speaker ID \`(S1)\`.
-10. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line "<Audio N> is the voice-timbre reference for <Subject N> (Sx)." even when nobody speaks in that clip, with the matching "<Audio N>: reference - ..." line in retention_analysis. Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.
+5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
+6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
+7. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
+8. **Dialogue**: wrap spoken dialogue in \`<d>[Japanese] ...</d>\` with speaker ID \`(S1)\`.
+9. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line "<Audio N> is the voice-timbre reference for <Subject N> (Sx)." even when nobody speaks in that clip, with the matching "<Audio N>: reference - ..." line in retention_analysis. Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.
 
 =======================================================
 OUTPUT FORMAT:
