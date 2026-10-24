@@ -43,8 +43,22 @@ const threeCuts = { shots: [{ id: "a", prompt: "Walk to the gate" },
   { id: "b", prompt: "Open the gate", end_state: "Woman holds the open gate with her right hand" }, { id: "c", prompt: "" }] };
 const third = draftGraph(config, scene, threeCuts, "prompt", "Enter the garden", "", 2);
 assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_prompt, "Open the gate");
-assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_end_state, threeCuts.shots[1].end_state);
-assert.match(third.writer.inputs.system_prompt, /continues directly from that ending/);
+assert.equal(JSON.parse(third.writer.inputs.custom_prompt).previous_end_state, undefined);
+assert.deepEqual(JSON.parse(third.writer.inputs.custom_prompt).cuts.map(c => c.id), ['b', 'c']);
+assert.doesNotMatch(third.writer.inputs.custom_prompt, /start_state|end_state|Woman holds/);
+assert.doesNotMatch(third.writer.inputs.system_prompt, /start_state|end_state/);
+assert.match(third.writer.inputs.system_prompt, /read its ending situation/);
+assert.match(third.writer.inputs.system_prompt, /continue directly from that ending/);
+for (const mode of ['I2V', 'T2V', 'FL2V', 'L2V']) {
+  const next = draftGraph(config, { mode, assets: [] }, threeCuts, 'prompt', 'Enter', '', 2);
+  const request = JSON.parse(next.writer.inputs.custom_prompt);
+  assert.equal(request.previous_prompt, threeCuts.shots[1].prompt);
+  assert.deepEqual(request.cuts.map(c => c.id), ['b', 'c']);
+  assert.doesNotMatch(next.writer.inputs.custom_prompt, /start_state|end_state|Woman holds/);
+  assert.doesNotMatch(next.writer.inputs.system_prompt, /start_state|end_state/);
+  assert.match(next.writer.inputs.system_prompt, /Read previous_prompt/);
+  assert.match(next.writer.inputs.system_prompt, /"prompt":"English H3 prompt"/);
+}
 const first = draftGraph(config, scene, threeCuts, "prompt", "Start", "", 0);
 assert.equal(JSON.parse(first.writer.inputs.custom_prompt).previous_prompt, undefined);
 assert.equal(JSON.parse(graph.writer.inputs.custom_prompt).cuts[1].prompt, undefined, "Only earlier cuts carry generated text as context");
@@ -130,7 +144,7 @@ for (const mode of ["R2V", "T2V", "I2V", "L2V", "FL2V"]) {
   if (mode === "R2V") assert.doesNotMatch(output, /anchors|last_frame/);
   if (mode === "L2V") assert.match(output, /only the ending of the final cut/);
 }
-assert.match(draftGraph(customConfig, scene, plan, "prompt", "", "", 1).writer.inputs.system_prompt, /previous_end_state/);
+assert.match(draftGraph(customConfig, scene, plan, "prompt", "", "", 1).writer.inputs.system_prompt, /previous_prompt/);
 delete customConfig.system_prompts.analysis;
 assert.equal(key, await imageAnalysisKey(scene, async () => bytes("first")), "Analysis identity is based only on image bytes");
 customConfig.system_prompts.analysis = SYSTEM_PROMPTS.analysis.text;
@@ -149,10 +163,10 @@ assert.equal(applied.shots[1].seed, "0");
 assert.equal(applied.shots[1].duration_seconds, 15);
 assert.equal(applied.shots[1].prompt, "Continues from A");
 assert.deepEqual(plan, before.plan);
-assert.deepEqual(readDraft('{"shots":[{"id":"wrong","prompt":"x"}]}', plan, 1), [{ index: 1, prompt: "x", start_state: "", end_state: "" }]);
+assert.deepEqual(readDraft('{"shots":[{"id":"wrong","prompt":"x"}]}', plan, 1), [{ index: 1, prompt: "x" }]);
 assert.equal(readDraft('{"shots":[{"prompt":"No generated ID"}]}', plan, 1)[0].index, 1);
-const repaired = readDraft('{"shots":[{"id":"a","prompt":"Continue from the gate.",""start_state":"At gate",""end_state":"Inside garden"}]}', plan, 1);
-assert.deepEqual(repaired, [{ index: 1, prompt: "Continue from the gate.", start_state: "At gate", end_state: "Inside garden" }]);
+const repaired = readDraft('{"shots":[{"id":"a",""prompt":"Continue from the gate."}]}', plan, 1);
+assert.deepEqual(repaired, [{ index: 1, prompt: "Continue from the gate." }]);
 const repairedPlan = applyDraft(plan, structuredClone(plan), repaired);
 assert.deepEqual(repairedPlan.shots[0], plan.shots[0]);
 assert.equal(repairedPlan.shots[1].id, "b");
@@ -165,14 +179,14 @@ for (const newline of ['\n', '\r\n', '\r']) for (const backslashes of ['', '\\',
   const malformed = '{\n"shots":[{"id":"b","prompt":"First line' + backslashes + newline + 'Second line","end_state":"Done"}]\n}';
   assert.equal(readDraft(malformed, plan, 1)[0].prompt, expected, 'Repair raw newlines while preserving literal backslashes');
   assert.equal(readDraft(malformed, { shots: [{ id: 'b' }] })[0].prompt, expected);
-  assert.equal(readDraft(malformed, plan, 1)[0].end_state, 'Done');
+  assert.equal(readDraft(malformed, plan, 1)[0].end_state, undefined);
 }
 const malformedWithQuotes = JSON.stringify({ shots: [{ prompt: exact, start_state: 'Start', end_state: 'End' }] }).replace('\\nNext line.', '\\\nNext line.');
 assert.equal(readDraft(malformedWithQuotes, plan, 1)[0].prompt, exact, 'Keep dialogue quotes, paths and complete content intact');
 assert.throws(() => readDraft('{"shots":[{"prompt":"First\\\nunfinished', plan, 1), /Prompt|返答/);
 assert.equal(readDraft(promptOnly.slice(0, -2), plan, 1)[0].prompt, exact, "Recover complete text when the JSON closing brackets are missing");
 assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","end_state":"unfinished', plan, 1)[0].prompt, "Intact text.");
-assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","start_state":"bad\\q"}]}', plan, 1)[0].start_state, "");
+assert.equal(readDraft('{"shots":[{"prompt":"Intact text.","start_state":"bad\\q"}]}', plan, 1)[0].start_state, undefined);
 for (const broken of [
   '{"shots":[{"prompt":"unfinished',
   '{"shots":[{"prompt":"Text with "unescaped" quotes"}]}',

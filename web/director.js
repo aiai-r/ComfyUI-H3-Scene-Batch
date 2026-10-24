@@ -209,7 +209,7 @@ function attachDirector(node) {
       const wrapper = element(section, "label"); const previous = element(wrapper, "input"); previous.type = "checkbox";
       previous.checked = state.previous[scope] ?? true; wrapper.append(" 前カットの終了状況をPromptに含める");
       previous.onchange = () => { state.previous[scope] = previous.checked; changed(); };
-      hint(wrapper, `参照元：カット ${selected}のPrompt・終了状態。ONなら終了状況を短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
+      hint(wrapper, `参照元：カット ${selected}のPrompt。ONならそのPromptから最後の状況を読み取り、今回のPrompt本文に短く説明して次の動作へつなげます。映像・音声の継続設定は変わりません。`);
     }
     const wholeScene = selected === null && scene.mode === "R2V";
     let total = null;
@@ -501,9 +501,8 @@ function attachDirector(node) {
     cutWriting.setAttribute("aria-selected", !writingAll); allWriting.setAttribute("aria-selected", writingAll);
     renderWriting(editor, writingAll ? null : cut, totalSlot);
     const prompt = input(cutEditor, `カット ${cut + 1} のPrompt`, shot.prompt, true); prompt.className = "prompt"; prompt.rows = 12;
-    const advanced = element(cutEditor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID / 開始・終了状態");
+    const advanced = element(cutEditor, "details"); element(advanced, "summary", "", "カット詳細 · seed / ID");
     const fields = element(advanced, "div", "row"); const id = input(fields, "ID", shot.id ?? `cut${cut + 1}`); const seed = input(fields, "seed（空欄は接続seed）", shot.seed);
-    const start = input(advanced, "開始状態", shot.start_state, true); const end = input(advanced, "終了状態", shot.end_state, true);
     collect = () => {
       const oldScope = `cut:${plan.shots[cut].id ?? cut}`;
       plan.shots[cut] = updateCut(plan.shots[cut], { id: id.value, seconds: seconds.value, seed: seed.value, prompt: prompt.value });
@@ -514,11 +513,9 @@ function attachDirector(node) {
           if (oldScope in values) { values[newScope] = values[oldScope]; delete values[oldScope]; }
         }
       }
-      if (start.value || "start_state" in shot) plan.shots[cut].start_state = start.value;
-      if (end.value || "end_state" in shot) plan.shots[cut].end_state = end.value;
       if (prefix.value || "prompt_prefix" in plan) plan.prompt_prefix = prefix.value;
     };
-    for (const field of [prefix, seconds, prompt, id, seed, start, end]) field.oninput = () => { try { collect(); save(); error.textContent = ""; } catch (e) { report(e); } };
+    for (const field of [prefix, seconds, prompt, id, seed]) field.oninput = () => { try { collect(); save(); error.textContent = ""; } catch (e) { report(e); } };
     id.onchange = () => { try { collect(); save(); render(); } catch (e) { report(e); } };
     const importing = element(settingsBody, "details"); element(importing, "summary", "", "Plan JSONを読み込む");
     const pasted = input(importing, "Plan JSONを貼り付け", pastedPlan, true); pasted.rows = 6; pasted.spellcheck = false;

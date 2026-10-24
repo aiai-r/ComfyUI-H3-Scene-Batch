@@ -177,10 +177,15 @@ for (let index = 0; index < 4; index++) {
   assert.equal(request.scene_cuts.length, 4);
   assert.match(system, /Full-Reference Mode Rewrite Output Format Guide/);
   assert.match(system, /Write ONLY selected_cut/);
+  assert.doesNotMatch(JSON.stringify(request), /start_state|end_state|Old ending/);
+  assert.doesNotMatch(system, /start_state|end_state/);
+  assert.deepEqual(Object.keys(sequentialDrafts[index]).sort(), ['index', 'prompt']);
   assert.doesNotMatch(system, /With 環境音のみ, include only ambience and physical sounds, no voices or music/);
   if (index) {
     assert.equal(request.previous_prompt, sequentialDrafts[index - 1].prompt);
-    assert.equal(request.previous_end_state, `End ${index}`);
+    assert.equal(request.previous_end_state, undefined);
+    assert.equal(request.cuts.length, 2);
+    assert.equal(request.cuts[0].id, fourCuts.shots[index - 1].id);
   } else assert.equal(request.previous_prompt, undefined);
 }
 assert.deepEqual(fourCuts, fourBefore, 'Drafts remain local until all cuts succeed');

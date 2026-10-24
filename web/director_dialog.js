@@ -144,8 +144,8 @@ export class DirectorLLM {
         value.writer.inputs.system_prompt += "\n" + [
           "This is a whole-scene workflow. Preserve the user's complete action sequence across scene_cuts, respecting each cut's supplied duration. Never fit the entire scene into each cut.",
           stage === "story"
-            ? "Plan ALL cuts together from the current instruction. Use one labeled section per supplied cut, including its index, ID, duration, starting state, paced actions/camera, ending state, exact assigned dialogue or no speech, voice-reference mapping and sound restrictions. Decide how much action fits each duration; cover every requested event in order without duplication or omissions. Honor explicit timing such as an initial silent interval. Return the complete editable allocation in the instruction's language."
-            : "The story is the whole-scene allocation. Write ONLY selected_cut using its assigned events and duration, not events assigned to later cuts. Preserve its exact dialogue, speaker-to-audio mapping and sound restrictions in the actual prompt. For continuation cuts, begin the scene description with the concrete ending situation from previous_end_state and previous_prompt, then advance the assigned action; do not repeat completed dialogue or actions. This continuity must be in prompt itself, not just start_state.",
+            ? "Plan ALL cuts together from the current instruction. Use one labeled section per supplied cut, including its index, ID, duration, paced actions/camera, exact assigned dialogue or no speech, voice-reference mapping and sound restrictions. Decide how much action fits each duration; cover every requested event in order without duplication or omissions. Honor explicit timing such as an initial silent interval. Return the complete editable allocation in the instruction's language."
+            : "The story is the whole-scene allocation. Write ONLY selected_cut using its assigned events and duration, not events assigned to later cuts. Preserve its exact dialogue, speaker-to-audio mapping and sound restrictions in the actual prompt. For continuation cuts, begin the scene description with the concrete ending situation read from previous_prompt, then advance the assigned action; do not repeat completed dialogue or actions. Write this continuity directly in the prompt itself.",
         ].join("\n");
       }
       value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
@@ -163,7 +163,7 @@ export class DirectorLLM {
         const text = await this.execute(graph("prompt", index), `Prompt作成中：${index + 1}/${working.shots.length}カット…`);
         if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
         const [draft] = readDraft(text, working, index);
-        working.shots[index] = { ...working.shots[index], prompt: draft.prompt, start_state: draft.start_state, end_state: draft.end_state };
+        working.shots[index] = { ...working.shots[index], prompt: draft.prompt };
         drafts.push(draft);
       }
       return drafts;

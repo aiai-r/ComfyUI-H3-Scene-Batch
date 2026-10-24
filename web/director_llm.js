@@ -12,7 +12,7 @@ const SOUND_INSTRUCTIONS = [
   "Preserve the user's exact requested dialogue, including words in Japanese quotation marks 「」, speaker and timing. Do not invent monologue, narration, dialogue or vocalizations; preserve explicitly requested nonverbal sounds. A first-person camera or 一人称視点 does not imply a spoken monologue.",
   "Apply 無言, no speech and silence to the specified people and time intervals, not indiscriminately to the whole scene. For a wholly non-speaking cut, explicitly write no dialogue or vocalizations in its action description and sound description. For a cut with dialogue, mark when the specified line starts and ends, then return to non-speaking action; do not fill the remaining time with speech or repeat completed dialogue from previous cuts.",
   "With 環境音のみ, include only ambience and physical sounds except dialogue explicitly requested for this cut; no other voices or music. Explicitly requested nonverbal sounds are also limited to their assigned moments. With BGMなし, use non_diegetic_music: N/A without suppressing requested dialogue. With complete silence, specify no sound in overall_soundscape.",
-  "Carry these sound restrictions into both the story and the actual prompt, not only start_state or end_state. If the supplied story invents speech or contradicts the user's audio restrictions, discard that addition. Before returning, check that every utterance is authorized by the current instruction and that every silent interval remains non-speaking.",
+  "Carry these sound restrictions into both the story and the actual prompt. If the supplied story invents speech or contradicts the user's audio restrictions, discard that addition. Before returning, check that every utterance is authorized by the current instruction and that every silent interval remains non-speaking.",
 ].join("\n");
 
 const VOICE_REFERENCE_INSTRUCTIONS = [
@@ -43,7 +43,7 @@ const R2V_REFERENCE_RULES = [
 ].join("\n");
 
 const R2V_PROMPT_SYSTEM_PROMPT = [
-  "The input is a JSON request from a scene editor. instruction is the user's direct instruction. story, when not empty, is the finalized scene plot. image_analysis holds saved descriptions of the reference images, and references lists the attached media labels in order. Write the H3 prompt for the one cut identified by selected_cut in cuts, using its duration_seconds. When the scene has several cuts, include only the events that belong to the selected cut. When previous_prompt or previous_end_state is supplied, the selected cut continues directly from that ending: start [Shot 1] from that concrete state and do not repeat completed actions or dialogue. Convert the input to the H3 format below. Preserve the planned action order, staging, duration, reference mapping, dialogue and audio constraints. Do not brainstorm a different story.",
+  "The input is a JSON request from a scene editor. instruction is the user's direct instruction. story, when not empty, is the finalized scene plot. image_analysis holds saved descriptions of the reference images, and references lists the attached media labels in order. Write the H3 prompt for the one cut identified by selected_cut in cuts, using its duration_seconds. When the scene has several cuts, include only the events that belong to the selected cut. When previous_prompt is supplied, read its ending situation and continue directly from that ending: start [Shot 1] from that concrete state and do not repeat completed actions or dialogue. Convert the input to the H3 format below. Preserve the planned action order, staging, duration, reference mapping, dialogue and audio constraints. Do not brainstorm a different story.",
   "",
   "You rewrite Japanese or English user instructions into a MiniMax H3 R2V (full-reference) video prompt. Return only the six plain-text sections specified below, with no Markdown fence, preface, or commentary.",
   "",
@@ -257,7 +257,7 @@ function modeInstructions(mode) {
       L2V: [
         "The supplied image <Picture 1> anchors only the ending of the final cut, identified by last_frame_cut. It is not a previous frame or an opening state.",
         "Start from the situation requested by the user and describe every requested action in order, building a continuous path toward that ending. Do not replace the requested action sequence with a static description of the image.",
-        "For the final cut, make its end_state match the image's pose, objects and composition, and explicitly state in the prompt that <Picture 1> aligns with the end of this cut. Earlier cuts lead toward that state; they do not yet have an attached endpoint image.",
+        "For the final cut, describe an ending that matches the image's pose, objects and composition, and explicitly state in the prompt that <Picture 1> aligns with the end of this cut. Earlier cuts lead toward that state; they do not yet have an attached endpoint image.",
         "Use the literal reference label <Picture 1>; never invent <last frame> or describe it as a preceding cut. A single-cut scene must contain the requested starting situation, actions and final image landing in that same cut.",
       ].join("\n"),
       FL2V: "The first and last images anchor the start and end of the scene." }[mode],
@@ -281,14 +281,14 @@ export function renderSystemPrompt(config, mode, action, partial = false, contin
     mode_instructions: modeInstructions(mode),
     continuity_instructions: continuation ? [
       "For each continuation cut, begin the scene description within the actual H3 prompt with a brief concrete description of the preceding cut's ending state, then describe the new action from that state. The first cut establishes the scene normally.",
-      "Use previous_end_state when supplied; otherwise derive only supported ending details from previous_prompt. For a whole-scene draft, use the preceding cut's planned ending. These are textual plans, not observations of generated footage.",
+      "Read previous_prompt and derive only its supported ending details. These are textual plans, not observations of generated footage.",
       "Carry the relevant subjects, wardrobe, positions, pose, held objects, ongoing motion, camera direction and sound. Summarize the ending, not the earlier plot; do not restart completed actions, repeat dialogue, or reset the camera without an explicit instruction.",
-      "Write this carry-over in the prompt field itself, not only start_state. Do not rely on 'as in the previous scene' as the explanation: state the visible situation explicitly, then advance it. If prior text is empty, do not invent a previous event.",
+      "Write this carry-over directly in the prompt field itself. Do not rely on 'as in the previous scene' as the explanation: state the visible situation explicitly, then advance it. If prior text is empty, do not invent a previous event.",
     ].join("\n")
       : "Write a self-contained H3 prompt for this cut. There is no preceding-cut context to describe; do not invent a previous scene or a continuation instruction.",
     output_instructions: [action === "story"
       ? `Return a concise editable story outline in the language of the instruction, with a beginning/action/ending for ${partial ? "only the selected cut" : "each supplied cut"}. Return only the outline.`
-      : `Return ONLY JSON: {"shots":[{${partial ? "" : '"id":"existing id",'}"prompt":"English H3 prompt","start_state":"...","end_state":"..."}]}. No markdown, no seeds, no durations, no extra cuts. Escape line breaks and quotation marks inside JSON strings; never put a literal line break or a backslash followed by a literal line break inside a string.`,
+      : `Return ONLY JSON: {"shots":[{${partial ? "" : '"id":"existing id",'}"prompt":"English H3 prompt"}]}. No markdown, no seeds, no durations, no extra cuts. Escape line breaks and quotation marks inside JSON strings; never put a literal line break or a backslash followed by a literal line break inside a string.`,
       partial ? "Return only the selected cut. Other cuts are context only; do not rewrite them." : "",
     ].filter(Boolean).join("\n"),
   };
@@ -365,14 +365,13 @@ export function draftGraph(config, scene, plan, action, instruction, story, sele
   const request = action === "analysis" ? { task: "Define the attached image for its intended reference use.", instruction, mode: scene.mode, target_image: analysisTarget }
     : { mode: scene.mode, instruction, story, scene_story: continuation ? sceneStory : "", include_previous: continuation, shared_prompt: plan.prompt_prefix ?? "",
     ...(scene.mode === "L2V" ? { last_frame_cut: plan.shots.length } : {}),
-    ...(partial && continuation ? { previous_prompt: plan.shots[selected - 1].prompt ?? "",
-      previous_end_state: plan.shots[selected - 1].end_state ?? "" } : {}),
+    ...(partial && continuation ? { previous_prompt: plan.shots[selected - 1].prompt ?? "" } : {}),
     ...(scene.mode !== "T2V" ? { image_analysis: analysis, references: references.map(r => ({ ...r, image_attached: false })) } : {}),
     selected_cut: partial ? selected + 1 : null,
     cuts: plan.shots.map((shot, i) => ({ id: shot.id ?? `cut${i + 1}`, duration_seconds: shot.duration_seconds ?? plan.defaults?.duration_seconds ?? 15,
       length: shot.length,
-      ...(partial && continuation && i < selected ? { prompt: shot.prompt ?? "", start_state: shot.start_state, end_state: shot.end_state } : {}) }))
-      .filter((_, i) => !partial || i === selected || continuation && i < selected) };
+      ...(partial && continuation && i === selected - 1 ? { prompt: shot.prompt ?? "" } : {}) }))
+      .filter((_, i) => !partial || i === selected || continuation && i === selected - 1) };
   const graph = {
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
     parameters: { class_type: "llama_cpp_parameters", inputs: JSON.parse(JSON.stringify(stage.parameters)) },
@@ -410,18 +409,18 @@ function repairDraftNewlines(text) {
 export function readDraft(text, plan, selected = null) {
   const content = text.trim().replace(/^```(?:json|text)?\s*/i, "").replace(/\s*```$/, "");
   // R2V writes the official plain six-section prompt for one cut.
-  if (selected != null && /^subject_definitions\s*:/i.test(content)) return [{ index: selected, prompt: content, start_state: "", end_state: "" }];
+  if (selected != null && /^subject_definitions\s*:/i.test(content)) return [{ index: selected, prompt: content }];
   let source;
   try { source = JSON.parse(content); }
   catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
     // Some LLM responses double the opening quote on JSON field names.
-    const repaired = repairDraftNewlines(content.replace(/([{,]\s*)""(shots|id|prompt|start_state|end_state)"\s*:/g, '$1"$2":'));
+    const repaired = repairDraftNewlines(content.replace(/([{,]\s*)""(shots|id|prompt)"\s*:/g, '$1"$2":'));
     try { source = JSON.parse(repaired); }
     catch (error) {
       if (!(error instanceof SyntaxError)) throw error;
       if (selected == null) throw new Error("LLMの返答形式を補正できませんでした。Promptを再作成してください。");
-      const fields = [...repaired.matchAll(/[{,]\s*"(prompt|start_state|end_state)"\s*:\s*("(?:\\.|[^"\\])*")(?=\s*[,}\]]|\s*$)/g)];
+      const fields = [...repaired.matchAll(/[{,]\s*"(prompt)"\s*:\s*("(?:\\.|[^"\\])*")(?=\s*[,}\]]|\s*$)/g)];
       // Recover only complete JSON strings from a single-cut response.
       if ([...repaired.matchAll(/[{,]\s*"prompt"\s*:/g)].length !== 1 || fields.filter(m => m[1] === "prompt").length !== 1) {
         throw new Error("LLMの返答から完全なPromptを取り出せませんでした。再作成してください。");
@@ -440,15 +439,15 @@ export function readDraft(text, plan, selected = null) {
     const cut = source.shots[i];
     const id = plan.shots[index].id ?? `cut${index + 1}`;
     if (!cut || selected == null && cut.id !== id || typeof cut.prompt !== "string" || !cut.prompt.trim()) throw new Error(`カット ${index + 1} のIDまたはPromptが不正です。`);
-    return { index, prompt: cut.prompt, start_state: String(cut.start_state ?? ""), end_state: String(cut.end_state ?? "") };
+    return { index, prompt: cut.prompt };
   });
 }
 
 export function applyDraft(current, baseline, drafts) {
   if (JSON.stringify(current) !== JSON.stringify(baseline)) throw new Error("処理中にカットが変更されています。Promptを再作成してください。");
   const result = structuredClone(current);
-  for (const { index, prompt, start_state, end_state } of drafts) {
-    result.shots[index] = { ...result.shots[index], prompt, start_state, end_state };
+  for (const { index, prompt } of drafts) {
+    result.shots[index] = { ...result.shots[index], prompt };
   }
   return result;
 }

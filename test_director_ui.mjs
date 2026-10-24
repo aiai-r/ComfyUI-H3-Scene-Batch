@@ -102,6 +102,29 @@ const byText = text => [...root.querySelectorAll("button")].find(b => b.textCont
 const field = text => [...root.querySelectorAll("label")].find(l => l.querySelector(".label")?.textContent === text)?.querySelector("input,textarea,select");
 const assertHealthy = () => assert.equal(root.querySelector('[role="alert"]').textContent, "");
 assertHealthy();
+// Existing saved state fields must not reappear or affect direct multi-cut prompts.
+const originalPlanValue = node.widgets.find(w => w.name === 'plan_json').value;
+const originalSceneValue = node.widgets.find(w => w.name === 'scene_json').value;
+node.widgets.find(w => w.name === 'plan_json').value = JSON.stringify({ shots: [
+  { id: 'first', prompt: 'Walk to the door. End with one hand on its handle.', duration_seconds: 15, start_state: 'Stale start', end_state: 'Stale ending' },
+  { id: 'second', prompt: 'At the door, hand on the handle, open it and enter.', duration_seconds: 15 },
+] });
+node.widgets.find(w => w.name === 'scene_json').value = JSON.stringify({ mode: 'I2V', assets: [{ kind: 'image', role: 'first', file: 'ref.png' }] });
+node.onConfigure();
+assert.equal(field('開始状態'), undefined);
+assert.equal(field('終了状態'), undefined);
+await byText('全カットまとめて作成').onclick();
+await root.querySelector('[aria-label="カット 2"]').onclick();
+field('カット 2 のPrompt').value = 'At the door with a hand on the handle, open it and enter the room.';
+field('カット 2 のPrompt').oninput();
+await byText('このシーンを生成').onclick(); assertHealthy();
+assert.equal(queuedRecord.plan.shots.length, 2);
+assert.equal(queuedRecord.plan.shots[1].prompt, field('カット 2 のPrompt').value);
+assert.equal(queuedRecord.plan.shots[0].prompt, 'Walk to the door. End with one hand on its handle.');
+node.widgets.find(w => w.name === 'plan_json').value = originalPlanValue;
+node.widgets.find(w => w.name === 'scene_json').value = originalSceneValue;
+node.onConfigure();
+console.log('State fields removed; I2V multi-cut direct prompts reach generation unchanged.');
 field('プロジェクト').value = 'My current project';
 await byText('開く').onclick(); assertHealthy();
 assert.deepEqual(projectCalls.at(-1), { project: 'My current project', action: 'open' });
@@ -282,7 +305,9 @@ const firstGenerated = field('カット 1 のPrompt').value;
 await root.querySelector('[aria-label="カット 2"]').onclick();
 await byText('Prompt作成').onclick(); assertHealthy();
 assert.equal(llmCalls.at(-1).data.previous_prompt, firstGenerated);
-assert.equal(llmCalls.at(-1).data.previous_end_state, 'End cut2');
+assert.equal(llmCalls.at(-1).data.previous_end_state, undefined);
+assert.doesNotMatch(JSON.stringify(llmCalls.at(-1).data), /start_state|end_state/);
+assert.equal([...root.querySelectorAll('label')].some(l => /^(開始状態|終了状態)$/.test(l.querySelector('.label')?.textContent ?? '')), false);
 assert.equal(field('カット 2 のPrompt').value, 'Generated cut3');
 const generated = JSON.parse(planWidget.serializeValue());
 assert.deepEqual(generated.shots.map(s => s.prompt), ['Generated cut2', 'Generated cut3']);
@@ -292,7 +317,7 @@ node.onConfigure(); assertHealthy();
 assert.deepEqual(JSON.parse(planWidget.serializeValue()), generated);
 
 for (const output of [
-  '{"shots":[{"id":"cut2","prompt":"Recovered second cut",""start_state":"Start",""end_state":"End"}]}',
+  '{"shots":[{"id":"cut2",""prompt":"Recovered second cut"}]}',
   '{"shots":[{"prompt":"Recovered second cut","end_state":"unfinished',
 ]) {
   promptOutput = output;
