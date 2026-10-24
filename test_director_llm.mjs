@@ -68,6 +68,16 @@ const editedScene = scenePrompt(60, '女性が歩く。', '女性が椅子に座
 assert.ok(editedScene.includes('女性が椅子に座る。'));
 assert.ok(!editedScene.includes('女性が歩く。'), 'Whole-scene prompts must not reintroduce a conflicting old direction');
 assert.ok(scenePrompt(60, '女性が歩く。', '   ', []).includes('女性が歩く。'));
+for (const direction of ['女性は「こんにちは」、男性は「どうも」と日本語で話す。', 'The woman says "Hello" and the man says "Good morning".']) {
+  const request = scenePrompt(30, direction, '', []);
+  assert.match(request, /use distinct speaker IDs such as `\(S1\)` and `\(S2\)`/);
+  assert.match(request, /keep each source's ID stable across clips/);
+  assert.match(request, /only when Japanese is explicitly requested/);
+  assert.match(request, /do not default to Japanese or translate dialogue when no language is specified/);
+  assert.doesNotMatch(request, /with speaker ID `\(S1\)`|wrap spoken dialogue in `<d>\[Japanese\]/);
+  assert.match(request, /<d>\[Language\] \.\.\.<\/d>/);
+  assert.ok(request.includes(direction));
+}
 const before = structuredClone({ config, plan, scene });
 // ComfyUI exposes node properties through reactive proxies in the browser.
 const reactive = value => new Proxy(value, { get(target, key) {
@@ -286,7 +296,7 @@ for (const [action, mode] of [['story', 'R2V'], ['prompt', 'T2V']]) for (const s
 const r2vSystem = draftGraph(config, scene, plan, 'prompt', '無言。環境音のみ。BGMなし。', '', 0).writer.inputs.system_prompt;
 for (const heading of sections) assert.ok(r2vSystem.includes(heading + ':'));
 assert.equal(r2vSystem, SYSTEM_PROMPTS.prompt_r2v.text, 'R2V prompts use the official guide without extra rules');
-assert.match(r2vSystem, /Preserve Japanese dialogue inside <d>\[Japanese\] \.\.\.<\/d>/);
+assert.match(r2vSystem, /Preserve the supplied dialogue and its original language inside <d>\.\.\.<\/d>/);
 console.log('Reference definitions: image-order labels, multiview and storyboard preservation, multiple subjects, exact final insertion passed.');
 
 const duplicate = referenceDefinitions([{...refs[0],key:'same image'}, {...refs[0],label:'<Picture 2>',key:'same image'}]);

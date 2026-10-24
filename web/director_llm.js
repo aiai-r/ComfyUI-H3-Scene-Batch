@@ -23,7 +23,7 @@ const R2V_REFERENCE_RULES = [
   "- Picture, Video and Audio numbering are independent and 1-based and follow the references list.",
   "- Define <Subject N> for reusable visual subjects, citing their source <Picture N> or <Video N>. Subject numbers do not have to match picture numbers. Distinguish reference-only audio from direct audio reuse.",
   "- Use only <Subject N>, <Picture N>, <Audio N> and <Video N> as reference labels. Other bracketed words in image_analysis, such as <Environment>, are not labels; define such content as a <Subject N>.",
-  "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve Japanese dialogue inside <d>[Japanese] ...</d>. Do not add BGM when the user requests none. Use (S1), (S2), <scenetrans>, and <cutoff> according to the guide. Do not invent reference tags for unused assets.",
+  "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve the supplied dialogue and its original language inside <d>...</d>. Do not add BGM when the user requests none. Use (S1), (S2), <scenetrans>, and <cutoff> according to the guide. Do not invent reference tags for unused assets.",
   "",
   "The following is the supplied full-reference writing guide. Apply its rules to the current request; its examples are format examples, not facts about the input images.",
   "",
@@ -87,7 +87,7 @@ export function scenePrompt(totalSeconds, instruction, story, images) {
   const userInstruction = `${mediaManifest(found, images)}\n\nUSER DIRECTION:\n${text.trim()}`;
   const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = ${i.subjects?.length ? `${i.subjects.map(n => `<Subject ${n}>`).join(", ")} Reference` : `<Picture ${i.number}> Reference`}; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
     : "No reference images supplied.";
-  const sections = "subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\nretention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\ndetailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Japanese] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
+  const sections = "subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\nretention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\ndetailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Language] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
   return `You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
 Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
 
@@ -117,7 +117,7 @@ CLIP PLANNING RULES (MANDATORY):
 5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
 6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
 7. **Continuity**: begin every clip after the first with a brief concrete description of the previous clip's ending situation, then advance the next action from that state. Do not repeat completed actions or dialogue.
-8. **Dialogue**: wrap spoken dialogue in \`<d>[Japanese] ...</d>\` with speaker ID \`(S1)\`.
+8. **Dialogue**: use distinct speaker IDs such as \`(S1)\` and \`(S2)\` for different vocal sources, and keep each source's ID stable across clips. Do not assign speaker IDs to characters who never vocalize. Preserve the supplied dialogue and requested language. Use \`[Japanese]\` only when Japanese is explicitly requested; do not default to Japanese or translate dialogue when no language is specified.
 9. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line "<Audio N> is the voice-timbre reference for <Subject N> (Sx)." even when nobody speaks in that clip, with the matching "<Audio N>: reference - ..." line in retention_analysis. Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.
 
 =======================================================

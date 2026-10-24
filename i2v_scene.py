@@ -145,7 +145,7 @@ CLIP PLANNING RULES (MANDATORY):
 5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
 6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
 7. **Continuity**: begin every clip after the first with a brief concrete description of the previous clip's ending situation, then advance the next action from that state. Do not repeat completed actions or dialogue.
-8. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
+8. **Dialogue**: use distinct speaker IDs such as `(S1)` and `(S2)` for different vocal sources, and keep each source's ID stable across clips. Do not assign speaker IDs to characters who never vocalize. Preserve the supplied dialogue and requested language. Use `[Japanese]` only when Japanese is explicitly requested; do not default to Japanese or translate dialogue when no language is specified.
 {extra_rules}
 
 =======================================================
@@ -269,7 +269,7 @@ R2V_REFERENCE_RULES = "\n".join([
     "- Picture, Video and Audio numbering are independent and 1-based and follow the references list.",
     "- Define <Subject N> for reusable visual subjects, citing their source <Picture N> or <Video N>. Subject numbers do not have to match picture numbers. Distinguish reference-only audio from direct audio reuse.",
     "- Use only <Subject N>, <Picture N>, <Audio N> and <Video N> as reference labels. Other bracketed words in image_analysis, such as <Environment>, are not labels; define such content as a <Subject N>.",
-    "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve Japanese dialogue inside <d>[Japanese] ...</d>. Do not add BGM when the user requests none. Use (S1), (S2), <scenetrans>, and <cutoff> according to the guide. Do not invent reference tags for unused assets.",
+    "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve the supplied dialogue and its original language inside <d>...</d>. Do not add BGM when the user requests none. Use (S1), (S2), <scenetrans>, and <cutoff> according to the guide. Do not invent reference tags for unused assets.",
     "",
     "The following is the supplied full-reference writing guide. Apply its rules to the current request; its examples are format examples, not facts about the input images.",
     "",
@@ -336,7 +336,7 @@ def media_manifest(found, images):
 
 R2V_SECTIONS_EXAMPLE = ("subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\n"
                         "retention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\n"
-                        "detailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Japanese] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...")
+                        "detailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Language] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...")
 
 
 def r2v_scene_prompt(total, instruction, images):
