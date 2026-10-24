@@ -54,6 +54,20 @@ for (const mode of ['T2V', 'I2V', 'L2V', 'FL2V', 'R2V']) for (const selected of 
     assert.match(system, /preceding cut's ending situation from previous_prompt/);
   }
 }
+for (const mode of ['T2V', 'I2V', 'L2V', 'FL2V', 'R2V']) {
+  for (const story of ['女性が椅子に座る。', '', '   ']) {
+    const graph = draftGraph(config, { ...scene, mode }, plan, 'prompt', '女性が歩く。', story, 0);
+    const request = JSON.parse(graph.writer.inputs.custom_prompt);
+    assert.equal(request.instruction, story.trim() ? '' : '女性が歩く。');
+    assert.equal(request.story, story);
+    assert.match(graph.writer.inputs.system_prompt, /Use instruction only when story is empty/);
+    assert.doesNotMatch(graph.writer.inputs.system_prompt, /current instruction takes priority/);
+  }
+}
+const editedScene = scenePrompt(60, '女性が歩く。', '女性が椅子に座る。', []);
+assert.ok(editedScene.includes('女性が椅子に座る。'));
+assert.ok(!editedScene.includes('女性が歩く。'), 'Whole-scene prompts must not reintroduce a conflicting old direction');
+assert.ok(scenePrompt(60, '女性が歩く。', '   ', []).includes('女性が歩く。'));
 const before = structuredClone({ config, plan, scene });
 // ComfyUI exposes node properties through reactive proxies in the browser.
 const reactive = value => new Proxy(value, { get(target, key) {
@@ -115,7 +129,7 @@ for (const selected of [0, null]) for (const action of ["prompt", "story"]) {
   assert.equal(request.references[0].label, "<Picture 1>");
   assert.deepEqual(request.cuts, [{ id: "cut2", duration_seconds: 15 }]);
   assert.doesNotMatch(output.writer.inputs.custom_prompt, /remains seated|Already seated|Still seated/);
-  assert.match(output.writer.inputs.system_prompt, /current instruction takes priority/);
+  assert.match(output.writer.inputs.system_prompt, action === "story" ? /current instruction takes priority/ : /Use instruction only when story is empty/);
   assert.match(output.writer.inputs.system_prompt, /every requested action in order/);
   assert.match(output.writer.inputs.system_prompt, /only the ending of the final cut/);
 }
