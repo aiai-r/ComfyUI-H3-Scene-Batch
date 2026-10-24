@@ -110,7 +110,7 @@ ${H3_REF_GUIDE}
 
 =======================================================
 CLIP PLANNING RULES (MANDATORY):
-1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between ${minStr} and ${maxStr} seconds. State it as a whole or half second value.
+1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between ${minStr} and ${maxStr} seconds.
 2. **Exact total**: the sum of every declared clip length MUST equal exactly ${totalStr} seconds.
 3. **Minimum clip count**: use AT LEAST ${minClips} clips. Fewer clips cannot reach ${totalStr} seconds while every clip stays at or under ${maxStr} seconds.
 4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed ${maxStr}, add one more clip instead of lengthening the last clip. Never make any clip longer than ${maxStr} seconds to reach the total.
