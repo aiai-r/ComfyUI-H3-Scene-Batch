@@ -104,9 +104,9 @@ def scene_prompt(total, instruction, filename, analysis):
     image = (f"- <Picture 1> ({filename}): Assigned Role = First Frame (<Picture 1> anchor for Scene 1 start); "
              f"User Note = none; Saved Visual Analysis = {to_json({'description': analysis})}")
     rules = (f"10. **Clip 1 is I2VA**: <Picture 1> is attached only to Clip 1 as its first frame. Write Clip 1 in the guide's I2VA format: its first line MUST be exactly `{I2V_ALIGNMENT}`, followed by one blank line and the three core fields.\n"
-             "11. **Clip 2 and later are T2VA continuations**: no picture is attached to them; each one continues from the previous clip's final frames. Write them in the guide's T2VA format: the three core fields only, with no image-alignment line and no <Picture 1> reference; describe subjects in words. Begin integrated_multimodal_description with a brief concrete description of the previous clip's planned ending state (subjects, wardrobe, positions, pose, held objects, ongoing motion, camera direction and sound), then continue the unfinished action from that state. Summarize the ending, not the earlier plot; do not restart completed actions or repeat dialogue.")
+             "11. **Clip 2 and later are T2VA continuations**: no picture is attached to them; each one continues from the previous clip's final frames. Write them in the guide's T2VA format: the three core fields only, with no image-alignment line and no <Picture 1> reference; describe subjects in words. Begin integrated_multimodal_description with a brief concrete description of the previous clip's planned ending state (subjects, wardrobe, positions, pose, held objects, ongoing motion, camera direction and sound), then advance the next action from that state. Summarize the ending, not the earlier plot; do not restart completed actions or repeat dialogue.")
     first = f"{I2V_ALIGNMENT}\n\nintegrated_multimodal_description: [Shot 1] ...\noverall_soundscape: ...\nnon_diegetic_music: ..."
-    second = ("integrated_multimodal_description: [Shot 1] At the end of the previous clip, ... Continue the unfinished action from the previous clip...\n"
+    second = ("integrated_multimodal_description: [Shot 1] At the end of the previous clip, ... Describe the previous clip's ending situation, then advance the next action...\n"
               "overall_soundscape: ...\nnon_diegetic_music: ...")
     return plan_prompt(total, "I2V (Base Mode: I2V (Image-to-Video). Scene 1 begins with <Picture 1> at 0.00s. Continuation scenes continue the motion flow.)",
                        image, instruction, BASE_GUIDE, rules, first, second)
@@ -144,7 +144,7 @@ CLIP PLANNING RULES (MANDATORY):
 4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed {max_str}, add one more clip instead of lengthening the last clip. Never make any clip longer than {max_str} seconds to reach the total.
 5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
 6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
-7. **Continuity (do not reset)**: every clip after the first MUST continue the previous clip's unfinished motion, camera direction, body pose, background state and sound. Begin such a clip with wording like "Continue the unfinished [action/camera movement] from the previous clip without resetting stride or pose. Keep the incoming camera direction, lighting and ambience...". End every non-final clip while an action is still in progress.
+7. **Continuity**: begin every clip after the first with a brief concrete description of the previous clip's ending situation, then advance the next action from that state. Do not repeat completed actions or dialogue.
 8. **Dialogue**: wrap spoken dialogue in `<d>[Japanese] ...</d>` with speaker ID `(S1)`.
 {extra_rules}
 
@@ -154,9 +154,9 @@ OUTPUT FORMAT:
 ### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)
 - **ストーリー概要**: Overall narrative arc.
 - **クリップ配分表** (one row per clip; the seconds column is the raw H3 generation length of that clip):
-| クリップ | 秒数 | 累計 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・末尾の未完アクション | 音響・BGM |
+| クリップ | 秒数 | 累計 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・終了時の状況 | 音響・BGM |
 |---|---|---|---|---|---|
-| Clip 1 | 9秒 | 9秒 | ... | (末尾: 〜〜している最中で終了) | ... |
+| Clip 1 | 9秒 | 9秒 | ... | (末尾: 終了時の状況) | ... |
 | Clip 2 | 13秒 | 22秒 | ... | (冒頭: 〜〜を継続 / 末尾: 〜〜で終了) | ... |
 - **合計**: クリップ数と生の生成秒数合計。最後の累計が {total_str}秒 と一致し、どのクリップも {max_str}秒 以下であることを確認する。
 
@@ -377,7 +377,7 @@ def r2v_scene_prompt(total, instruction, images):
         for i in images) if images else "No reference images supplied."
     rules = ("10. **Complete prompt in every clip**: each clip is generated alone, so EVERY clip prompt MUST contain all six full-reference sections in order (subject_definitions, summary, retention_analysis, detailed_description, overall_soundscape, non_diegetic_music), and its subject_definitions MUST repeat every subject and every user-declared voice-reference line \"<Audio N> is the voice-timbre reference for <Subject N> (Sx).\" even when nobody speaks in that clip, with the matching \"<Audio N>: reference - ...\" line in retention_analysis. "
              "Bind each <Audio N> to the subject of the picture the user paired it with, and keep each speaker's (Sx) the same in every clip. Never shorten later clips to only detailed_description.")
-    second = R2V_SECTIONS_EXAMPLE.replace("[Shot 1] ...", "Continue the unfinished action from the previous clip...\n[Shot 1] ...", 1)
+    second = R2V_SECTIONS_EXAMPLE.replace("[Shot 1] ...", "Describe the previous clip's ending situation, then advance the next action...\n[Shot 1] ...", 1)
     return plan_prompt(total, "R2V (Base Mode: R2V (Reference-to-Video). Maintain character/subject identities (<Subject 1>, etc.) consistently across all scenes.)",
                        images_context, user_instruction, H3_REF_GUIDE, rules, R2V_SECTIONS_EXAMPLE, second)
 
