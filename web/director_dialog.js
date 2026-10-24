@@ -110,7 +110,8 @@ export class DirectorLLM {
     const config = this.node.properties.h3_llm;
     const story = action === "prompt" ? state.story : "";
     // Each image's saved analysis with the scene-wide Subject numbering.
-    const pictures = referenceDescriptions(scene).filter(r => r.kind === "image");
+    const references = referenceDescriptions(scene);
+    const pictures = references.filter(r => r.kind === "image");
     const records = pictures.map(r => ({ label: r.label, ...this.imageRecord(scene.assets[r.asset_index]) }));
     const images = pictures.map((r, index) => {
       const before = referenceDefinitions(records.slice(0, index)), through = referenceDefinitions(records.slice(0, index + 1));
@@ -119,7 +120,8 @@ export class DirectorLLM {
       const subjects = [...new Set([...analysis.matchAll(/<Subject (\d+)>/g)].map(m => Number(m[1])))];
       return { number: index + 1, filename: asset.file.split(/[\\/]/).pop(), note: asset.note ?? "", analysis, subjects };
     });
-    const graph = sceneGraph(config, totalSeconds, state.instruction, story, images, action === "generate" ? "all" : action);
+    const media = references.filter(r => r.kind !== "image").map(({ label, note }) => ({ label, note }));
+    const graph = sceneGraph(config, totalSeconds, state.instruction, story, images, action === "generate" ? "all" : action, media);
     graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const text = await this.execute(graph, action === "story" ? "ストーリー（カット配分）作成中…" : "カット割りと全カットのPromptを作成中…");
     const result = readScene(text, totalSeconds, action === "story" ? "story" : "prompt");

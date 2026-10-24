@@ -265,19 +265,35 @@ node.properties.h3_llm.story.parameters.max_tokens = 1024;
 node.properties.h3_llm.prompt.parameters.max_tokens = 2048;
 const allocationOnly = '### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)\n| Clip 1 | 15秒 | 門を開ける |\n| Clip 2 | 15秒 | 庭へ入る |';
 const promptOnly = '### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)\n=== SCENE 1 (duration: 15s) ===\n```text\nsubject_definitions:\nA garden.\n\nsummary:\nA walk.\n\nretention_analysis:\nN/A\n\ndetailed_description:\n[Shot 1] Open the gate.\n\noverall_soundscape:\nFootsteps.\n\nnon_diegetic_music:\nN/A\n```';
+const memoScene = { mode: 'R2V', assets: [
+  { kind: 'audio', file: 'off.wav', enabled: false, note: 'DISABLED AUDIO NOTE' },
+  { kind: 'audio', file: 'rain.wav', note: '雨の環境音として使う。\n台詞ではない。' },
+  { kind: 'video', file: 'off.mp4', enabled: false, note: 'DISABLED VIDEO NOTE' },
+  { kind: 'video', file: 'camera.mp4', note: 'カメラ移動の参考。人物は使わない。' },
+  { kind: 'video', file: 'ambient.mp4', use_audio: true, note: '映像と同期した環境音の参考。' },
+  { kind: 'audio', file: 'empty.wav', note: '' },
+] };
+const memoBefore = structuredClone(memoScene);
 for (const action of ['story', 'prompt', 'all', 'generate']) {
   const requests = [], stories = [];
   buttonLLM.execute = async graph => {
     requests.push(graph);
     return action === 'story' ? allocationOnly : action === 'prompt' ? promptOnly : allocationOnly + '\n\n' + promptOnly;
   };
-  const result = await buttonLLM.createScene({ mode: 'R2V', assets: [] }, { instruction: '門を開けて庭へ入る。', story: '編集済みの配分' }, action, 30, story => stories.push(story));
+  const result = await buttonLLM.createScene(memoScene, { instruction: '門を開けて庭へ入る。', story: '編集済みの配分' }, action, 30, story => stories.push(story));
   assert.equal(requests.length, 1);
   const request = requests[0].writer.inputs.custom_prompt;
   assert.equal(request.includes('### Part 1'), action !== 'prompt');
   assert.equal(request.includes('### Part 2'), action !== 'story');
   assert.equal(request.includes('# Full-Reference Mode Rewrite Output Format Guide'), action !== 'story');
   assert.equal(requests[0].parameters.inputs.max_tokens, action === 'story' ? 1024 : 2048);
+  const expectedMedia = referenceDescriptions(memoScene);
+  for (const reference of expectedMedia) {
+    const line = request.split('\n').find(line => line.startsWith(`- ${reference.label}:`));
+    assert.ok(line?.includes(`User Note = ${JSON.stringify(reference.note)}`), `${action}: note follows the normal-path reference label ${reference.label}`);
+  }
+  assert.doesNotMatch(request, /DISABLED AUDIO NOTE|DISABLED VIDEO NOTE/);
+  assert.deepEqual(memoScene, memoBefore, 'Forwarding notes preserves asset settings');
   if (action === 'story') {
     assert.equal(result.cuts, null);
     assert.doesNotMatch(request, /subject_definitions|retention_analysis|detailed_description|non_diegetic_music|=== SCENE/);

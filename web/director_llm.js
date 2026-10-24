@@ -60,17 +60,18 @@ export function normalizeMediaReferences(text) {
   return { text: normalized, found };
 }
 
-function mediaManifest(found, images) {
+function mediaManifest(found, images, media) {
   const pictures = images.map(i => i.number);
-  const allowed = new Set([...found, ...pictures.map(n => mediaTag("Picture", n))]);
+  const allowed = new Set([...found, ...pictures.map(n => mediaTag("Picture", n)), ...media.map(r => r.label)]);
   if (!allowed.size) return "VALIDATED MEDIA REFERENCE INVENTORY: none. Do not introduce <Picture N>, <Audio N>, or <Video N> references.";
   const lines = ["VALIDATED MEDIA REFERENCE INVENTORY:", "Use these exact native MiniMax H3 labels. Preserve the user's stated purpose for each asset. Do not invent another media reference."];
   for (const kind of ["Picture", "Audio", "Video"]) for (let number = 1; number <= MEDIA_LIMITS[kind]; number++) {
     const tag = `<${kind} ${number}>`;
     if (!allowed.has(tag)) continue;
     const labels = kind === "Picture" ? (images.find(i => i.number === number)?.subjects ?? []).map(n => `<Subject ${n}>`).join(", ") : "";
+    const reference = media.find(r => r.label === tag);
     lines.push(`- ${tag}: ${labels ? `attached as a reference asset; label it ${labels} in the generated prompt. Its saved visual analysis is provided separately`
-      : kind === "Picture" && pictures.includes(number) ? "its saved visual analysis is provided separately" : "declared by the user; its contents were not inspected"}`);
+      : kind === "Picture" && pictures.includes(number) ? "its saved visual analysis is provided separately" : "declared by the user; its contents were not inspected"}${reference ? `; User Note = ${JSON.stringify(reference.note ?? "")}` : ""}`);
   }
   return lines.join("\n");
 }
@@ -79,12 +80,12 @@ const seconds2 = value => Number(value).toFixed(2);
 const REFERENCE_HANDLING_RULE = "The original images are not attached to this generation step. Use their saved visual analyses only. Audio and video contents are not analyzed; use those assets only as explicitly directed by the user.";
 
 // images: [{ number, filename, note, analysis }]
-export function scenePrompt(totalSeconds, instruction, story, images, action = "all") {
+export function scenePrompt(totalSeconds, instruction, story, images, action = "all", media = []) {
   const { min, max } = SCENE_CUT_SECONDS;
   const minStr = seconds2(min), maxStr = seconds2(max), totalStr = seconds2(totalSeconds);
   const minClips = Math.max(1, Math.min(Math.ceil(totalSeconds / max), Math.floor(totalSeconds / min)));
   const { text, found } = normalizeMediaReferences(story.trim() ? story : instruction);
-  const userInstruction = `${mediaManifest(found, images)}\n\nUSER DIRECTION:\n${text.trim()}`;
+  const userInstruction = `${mediaManifest(found, images, media)}\n\nUSER DIRECTION:\n${text.trim()}`;
   const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = ${i.subjects?.length ? `${i.subjects.map(n => `<Subject ${n}>`).join(", ")} Reference` : `<Picture ${i.number}> Reference`}; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
     : "No reference images supplied.";
   const sections = "subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\nretention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\ndetailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Language] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
@@ -156,7 +157,7 @@ Continue with \`=== SCENE 3 (duration: Xs) ===\` and so on until the story is fi
 `;
 }
 
-export function sceneGraph(config, totalSeconds, instruction, story, images, action = "all") {
+export function sceneGraph(config, totalSeconds, instruction, story, images, action = "all", media = []) {
   const stage = action === "story" ? config?.story : config?.prompt;
   if (!config?.loader || !stage) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
   const parameters = JSON.parse(JSON.stringify(stage.parameters));
@@ -164,7 +165,7 @@ export function sceneGraph(config, totalSeconds, instruction, story, images, act
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
     parameters: { class_type: "llama_cpp_parameters", inputs: parameters },
     writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(stage.inputs)),
-      llama_model: ["model", 0], parameters: ["parameters", 0], system_prompt: "", custom_prompt: scenePrompt(totalSeconds, instruction, story, images, action) } },
+      llama_model: ["model", 0], parameters: ["parameters", 0], system_prompt: "", custom_prompt: scenePrompt(totalSeconds, instruction, story, images, action, media) } },
     result: { class_type: "PreviewAny", inputs: { source: ["writer", 0] } },
   };
 }
