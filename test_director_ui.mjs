@@ -357,7 +357,7 @@ assert.equal(llmCalls.at(-1).stage, 'scene', 'One request plans every cut');
 assert.equal(llmCalls.at(-1).data.total_seconds, 30);
 assert.equal(llmCalls.at(-1).system, '', 'The whole request is one user message, as in short_storygen_h3');
 assert.match(llmCalls.at(-1).data.text, /# Full-Reference Mode Rewrite Output Format Guide/);
-assert.match(llmCalls.at(-1).data.text, /DECIDE YOURSELF how many clips/);
+assert.match(llmCalls.at(-1).data.text, /Use the supplied story's clip allocation when present/);
 assert.equal(llmCalls.at(-1).parameters.max_tokens, node.properties.h3_llm.prompt.parameters.max_tokens, 'Whole-scene generation uses the configured output limit');
 let planned = JSON.parse(planWidget.serializeValue());
 assert.deepEqual(planned.shots.map(s => [s.id, s.duration_seconds]), [['cut1', 15], ['cut2', 15]], 'The LLM decides the cut lengths');

@@ -104,7 +104,7 @@ export class DirectorLLM {
       : references.map(r => `${r.label}\n${r.text.replace(/<Subject\s+\d+>/g, "The referenced subject").replace(/<Picture(?:\s+\d+)?>/g, r.label)}`).join("\n\n");
   }
 
-  // Whole-scene R2V over one cut: a single request decides the cuts and writes every prompt.
+  // Whole-scene R2V uses one request for the selected writing action.
   async createScene(scene, state, action, totalSeconds, onStory) {
     await this.analyze(scene, undefined, false, state.instruction);
     const config = this.node.properties.h3_llm;
@@ -119,7 +119,7 @@ export class DirectorLLM {
       const subjects = [...new Set([...analysis.matchAll(/<Subject (\d+)>/g)].map(m => Number(m[1])))];
       return { number: index + 1, filename: asset.file.split(/[\\/]/).pop(), note: asset.note ?? "", analysis, subjects };
     });
-    const graph = sceneGraph(config, totalSeconds, state.instruction, story, images);
+    const graph = sceneGraph(config, totalSeconds, state.instruction, story, images, action === "generate" ? "all" : action);
     graph.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
     const text = await this.execute(graph, action === "story" ? "ストーリー（カット配分）作成中…" : "カット割りと全カットのPromptを作成中…");
     const result = readScene(text, totalSeconds, action === "story" ? "story" : "prompt");

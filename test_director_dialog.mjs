@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey } from "./web/director_llm.js";
+import { draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, sceneGraph, readScene } from "./web/director_llm.js";
 
 const calls = [], history = new Map(), bytes = new Map([["one.png", "one"], ["two.png", "two"]]);
 let failed = false, pending;
@@ -19,8 +19,8 @@ const api = { async fetchApi(path, options) {
 } };
 const source = (await readFile(new URL("./web/director_dialog.js", import.meta.url), "utf8")).replace(/^import .*;\r?\n/gm, "").replaceAll("export ", "");
 let nextSeed = 1000;
-const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "imageAnalysisKey", "crypto", source + "\nreturn DirectorLLM;")(
-  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
+const LLM = new Function("api", "draftGraph", "readDraft", "sceneAssets", "referenceDescriptions", "referenceDefinitions", "imageAnalysisKey", "sceneGraph", "readScene", "crypto", source + "\nreturn DirectorLLM;")(
+  api, draftGraph, readDraft, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, sceneGraph, readScene, { getRandomValues: values => { values[0] = ++nextSeed; return values; } });
 const node = { properties: { h3_llm: { loader: { model: "existing" }, story: { inputs: {}, parameters: {} }, prompt: { inputs: {}, parameters: {} } } }, graph: { change() {} } };
 const scene = { mode: "R2V", assets: [{ kind: "image", file: "one.png" }, { kind: "image", file: "two.png" }] };
 const llm = new LLM(node, () => {});
@@ -258,3 +258,38 @@ for (const [mode,role] of [['I2V','first'],['L2V','last'],['FL2V','first']]) {
   assert.doesNotMatch(JSON.parse(boundaryCalls[0].writer.inputs.custom_prompt).image_analysis,/<Subject/);
 }
 console.log('Boundary modes reuse saved observations without R2V subject sections.');
+
+const buttonLLM = new LLM(node, () => {});
+buttonLLM.analyze = async () => '';
+node.properties.h3_llm.story.parameters.max_tokens = 1024;
+node.properties.h3_llm.prompt.parameters.max_tokens = 2048;
+const allocationOnly = '### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)\n| Clip 1 | 15秒 | 門を開ける |\n| Clip 2 | 15秒 | 庭へ入る |';
+const promptOnly = '### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)\n=== SCENE 1 (duration: 15s) ===\n```text\nsubject_definitions:\nA garden.\n\nsummary:\nA walk.\n\nretention_analysis:\nN/A\n\ndetailed_description:\n[Shot 1] Open the gate.\n\noverall_soundscape:\nFootsteps.\n\nnon_diegetic_music:\nN/A\n```';
+for (const action of ['story', 'prompt', 'all', 'generate']) {
+  const requests = [], stories = [];
+  buttonLLM.execute = async graph => {
+    requests.push(graph);
+    return action === 'story' ? allocationOnly : action === 'prompt' ? promptOnly : allocationOnly + '\n\n' + promptOnly;
+  };
+  const result = await buttonLLM.createScene({ mode: 'R2V', assets: [] }, { instruction: '門を開けて庭へ入る。', story: '編集済みの配分' }, action, 30, story => stories.push(story));
+  assert.equal(requests.length, 1);
+  const request = requests[0].writer.inputs.custom_prompt;
+  assert.equal(request.includes('### Part 1'), action !== 'prompt');
+  assert.equal(request.includes('### Part 2'), action !== 'story');
+  assert.equal(request.includes('# Full-Reference Mode Rewrite Output Format Guide'), action !== 'story');
+  assert.equal(requests[0].parameters.inputs.max_tokens, action === 'story' ? 1024 : 2048);
+  if (action === 'story') {
+    assert.equal(result.cuts, null);
+    assert.doesNotMatch(request, /subject_definitions|retention_analysis|detailed_description|non_diegetic_music|=== SCENE/);
+    assert.deepEqual(stories, ['| Clip 1 | 15秒 | 門を開ける |\n| Clip 2 | 15秒 | 庭へ入る |']);
+  } else {
+    assert.equal(result.cuts.length, 1);
+    assert.deepEqual(result.problems, []);
+    if (action === 'prompt') {
+      assert.equal(result.story, '');
+      assert.equal(stories.length, 0);
+      assert.ok(request.includes('編集済みの配分'));
+    } else assert.equal(stories.length, 1);
+  }
+}
+console.log('Whole-scene buttons: story-only allocation, prompt-only output and combined output use the matching LLM settings.');

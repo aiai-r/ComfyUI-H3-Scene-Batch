@@ -79,7 +79,7 @@ const seconds2 = value => Number(value).toFixed(2);
 const REFERENCE_HANDLING_RULE = "The original images are not attached to this generation step. Use their saved visual analyses only. Audio and video contents are not analyzed; use those assets only as explicitly directed by the user.";
 
 // images: [{ number, filename, note, analysis }]
-export function scenePrompt(totalSeconds, instruction, story, images) {
+export function scenePrompt(totalSeconds, instruction, story, images, action = "all") {
   const { min, max } = SCENE_CUT_SECONDS;
   const minStr = seconds2(min), maxStr = seconds2(max), totalStr = seconds2(totalSeconds);
   const minClips = Math.max(1, Math.min(Math.ceil(totalSeconds / max), Math.floor(totalSeconds / min)));
@@ -88,8 +88,8 @@ export function scenePrompt(totalSeconds, instruction, story, images) {
   const imagesContext = images.length ? images.map(i => `- <Picture ${i.number}> (${i.filename}): Assigned Role = ${i.subjects?.length ? `${i.subjects.map(n => `<Subject ${n}>`).join(", ")} Reference` : `<Picture ${i.number}> Reference`}; User Note = ${i.note || "none"}; Saved Visual Analysis = ${JSON.stringify({ description: i.analysis })}`).join("\n")
     : "No reference images supplied.";
   const sections = "subject_definitions:\n<Subject N> is ...\n<Audio N> is the voice-timbre reference for <Subject N> (Sx).\n\nsummary:\n...\n\nretention_analysis:\n<Subject N> (appears in [Shot 1]): fully_preserved - ...\n<Audio N>: reference - its voice timbre guides <Subject N> (Sx) without copying the original signal.\n\ndetailed_description:\n[Shot 1] ... <Subject N> (Sx) says, <d>[Language] ...</d>\n\noverall_soundscape:\n...\n\nnon_diegetic_music:\n...";
-  return `You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
-Read the user's entire story request below and DECIDE YOURSELF how many clips the story needs and how long each single clip must be.
+  const context = `You are a master film director and MiniMax-H3 prompt engineer creating a multi-clip sequence for **ComfyUI MiniMax-H3 Contex-Loop**.
+Read the entire scene request below. Use the supplied story's clip allocation when present; otherwise decide how many clips the story needs and how long each clip must be.
 
 =======================================================
 PROJECT SPECIFICATIONS:
@@ -103,7 +103,22 @@ ${imagesContext}
 ${REFERENCE_HANDLING_RULE}
 
 USER STORY CONCEPT / INSTRUCTION:
-"""${userInstruction}"""
+"""${userInstruction}"""`;
+  const allocation = `### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)
+- **ストーリー概要**: Overall narrative arc.
+- **クリップ配分表** (one row per clip; the seconds column is the raw H3 generation length of that clip):
+| クリップ | 秒数 | 累計 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・終了時の状況 | 音響・BGM |
+|---|---|---|---|---|---|
+| Clip 1 | 9秒 | 9秒 | ... | (末尾: 終了時の状況) | ... |
+| Clip 2 | 13秒 | 22秒 | ... | (冒頭: 〜〜を継続 / 末尾: 〜〜で終了) | ... |
+- **合計**: クリップ数と生の生成秒数合計。最後の累計が ${totalStr}秒 と一致し、どのクリップも ${maxStr}秒 以下であることを確認する。`;
+  if (action === "story") return `${context}
+
+Plan only the story and clip allocation. Preserve the requested action order, dialogue, speakers, reference roles, sound and music restrictions. Keep each clip within ${minStr}–${maxStr} seconds and the declared total at ${totalStr} seconds. Describe each clip's ending situation and how the next clip continues from it.
+Return only the story and allocation below in the instruction's language. Do not write video-generation prompts.
+
+${allocation}`;
+  return `${context}
 
 USER-PROVIDED MINIMAX H3 GUIDE:
 ${H3_REF_GUIDE}
@@ -113,7 +128,7 @@ CLIP PLANNING RULES (MANDATORY):
 1. **Per-clip length**: every clip is a separate MiniMax-H3 generation, so each clip's length MUST be between ${minStr} and ${maxStr} seconds.
 2. **Exact total**: the sum of every declared clip length MUST equal exactly ${totalStr} seconds.
 3. **Minimum clip count**: use AT LEAST ${minClips} clips. Fewer clips cannot reach ${totalStr} seconds while every clip stays at or under ${maxStr} seconds.
-4. **No remainder dumping**: decide every clip length in the Part 1 table BEFORE writing any prompt, keeping a running total. If the seconds left for the last clip would exceed ${maxStr}, add one more clip instead of lengthening the last clip. Never make any clip longer than ${maxStr} seconds to reach the total.
+4. **No remainder dumping**: decide every clip length before writing any prompt, keeping a running total. If the seconds left for the last clip would exceed ${maxStr}, add one more clip instead of lengthening the last clip. Never make any clip longer than ${maxStr} seconds to reach the total.
 5. **Group short events**: a short beat that does not deserve its own generation MUST become an extra [Shot] inside a neighbouring clip instead of a clip of its own.
 6. **Each clip owns its own timeline**: every timestamp inside a clip's prompt MUST be within 0.000s and that clip's OWN length. Clip 2 and later restart at 0.000s. NEVER write cumulative timestamps that continue counting from a previous clip.
 7. **Continuity**: begin every clip after the first with a brief concrete description of the previous clip's ending situation, then advance the next action from that state. Do not repeat completed actions or dialogue.
@@ -123,16 +138,7 @@ CLIP PLANNING RULES (MANDATORY):
 =======================================================
 OUTPUT FORMAT:
 
-### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)
-- **ストーリー概要**: Overall narrative arc.
-- **クリップ配分表** (one row per clip; the seconds column is the raw H3 generation length of that clip):
-| クリップ | 秒数 | 累計 | クリップ内容・Shot構成 | 前クリップからの引き継ぎ・終了時の状況 | 音響・BGM |
-|---|---|---|---|---|---|
-| Clip 1 | 9秒 | 9秒 | ... | (末尾: 終了時の状況) | ... |
-| Clip 2 | 13秒 | 22秒 | ... | (冒頭: 〜〜を継続 / 末尾: 〜〜で終了) | ... |
-- **合計**: クリップ数と生の生成秒数合計。最後の累計が ${totalStr}秒 と一致し、どのクリップも ${maxStr}秒 以下であることを確認する。
-
-### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)
+${action === "prompt" ? "" : allocation + "\n\n"}### Part 2: 各クリップ個別プロンプト (ComfyUI Contex-Loop Prompts)
 
 Output one block per clip under \`### Part 2\`, in order. The header of each block MUST carry that clip's own length exactly in this form:
 
@@ -150,14 +156,15 @@ Continue with \`=== SCENE 3 (duration: Xs) ===\` and so on until the story is fi
 `;
 }
 
-export function sceneGraph(config, totalSeconds, instruction, story, images) {
-  if (!config?.loader || !config?.prompt) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
-  const parameters = JSON.parse(JSON.stringify(config.prompt.parameters));
+export function sceneGraph(config, totalSeconds, instruction, story, images, action = "all") {
+  const stage = action === "story" ? config?.story : config?.prompt;
+  if (!config?.loader || !stage) throw new Error("LLM設定がありません。Scene Directorの開発workflowを開いてください。");
+  const parameters = JSON.parse(JSON.stringify(stage.parameters));
   return {
     model: { class_type: "llama_cpp_model_loader", inputs: JSON.parse(JSON.stringify(config.loader)) },
     parameters: { class_type: "llama_cpp_parameters", inputs: parameters },
-    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(config.prompt.inputs)),
-      llama_model: ["model", 0], parameters: ["parameters", 0], system_prompt: "", custom_prompt: scenePrompt(totalSeconds, instruction, story, images) } },
+    writer: { class_type: "llama_cpp_instruct_adv", inputs: { ...JSON.parse(JSON.stringify(stage.inputs)),
+      llama_model: ["model", 0], parameters: ["parameters", 0], system_prompt: "", custom_prompt: scenePrompt(totalSeconds, instruction, story, images, action) } },
     result: { class_type: "PreviewAny", inputs: { source: ["writer", 0] } },
   };
 }
@@ -170,8 +177,9 @@ export function readScene(text, totalSeconds, action) {
   const part2 = content.indexOf("### Part 2");
   let story;
   if (content.includes("### Part 1") && part2 >= 0) story = content.slice(0, part2).replace("### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)", "").replace("### Part 1", "").trim();
+  else if (part2 >= 0) story = content.slice(0, part2).trim();
   else { const first = content.search(/(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*1/i); story = (first >= 0 ? content.slice(0, first) : content).trim(); }
-  if (action === "story") return { story: story || content, cuts: null, problems: [] };
+  if (action === "story") return { story: (story || content).replace("### Part 1: 全体ストーリー＆クリップ配分 (Japanese Breakdown)", "").trim(), cuts: null, problems: [] };
   const header = /(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*(\d+)([^=\n*\]]*)(?:===|\]|\*\*)?\s*(?:```(?:text|markdown)?\s*\n([\s\S]*?)\n```|(?=\n(?:===|###|####|##|\*\*|\[)\s*(?:SCENE|シーン|Scene)\s*\d+|$(?![\s\S])))/gi;
   let raw = [];
   for (const m of content.matchAll(header)) {
