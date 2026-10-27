@@ -43,7 +43,7 @@ ComfyUIを再起動し、ブラウザを再読み込みしてこのJSONを開い
 
 作成時は `H3 Scene Turbo LoRA` がR2Vに `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors`、それ以外に `minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors` を強度1で自動適用します。stepsの初期値は4です。人物・画風などは既存の `Power Lora Loader (rgthree)` に追加してください。turboを重複登録しないでください。採用保存ではturboと追加LoRAの名前・有効状態・強度、カット別stepsをJSONへ記録します。標準の `LoraLoader` / `LoraLoaderModelOnly` も保存対象です。復元には同じLoRAノード構成と、cloud側にも対応するLoRAファイルが必要です。
 
-バッチのturbo設定は `batch.json` に保持します。「バッチLoRA設定」で変更した系統は「未完了から再開」でも適用し、変更しない系統は再開元の設定を引き継ぎます。開始・再開前に残り全シーンのTurbo LoRAを照合し、指定が見つからない場合はシーン番号と理由を表示します。完了済みシーンと保存済みシーンJSONは変更しません。LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使います。旧シーンの追加LoRAを過去の設定へ復元することはできません。
+バッチのturbo設定は `batch.json` に保持し、未完了からの再開でも引き継ぎます。設定を変更してやり直す場合は開始番号を指定して新しいバッチを開始してください。保存済みシーンJSONは上書きしません。LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使います。旧シーンの追加LoRAを過去の設定へ復元することはできません。
 
 カット別Prompt作成の反映先は選択したカットで固定し、LLMが返すIDには依存しません。JSONの項目名の余分な引用符は補正します。カット別作成では、補正後も形式が壊れていても完全なPrompt文字列を1件だけ取り出せれば反映します。空欄・本文の途中切れ・複数カットが混ざった返答は既存Promptを保持してエラーを表示します。
 

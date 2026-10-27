@@ -573,14 +573,14 @@ function attachDirector(node) {
     const data = await projectRequest(project.value, "list"); const batch = data.batch;
     library.replaceChildren(); button(library, "← 作成に戻る", () => switchTab(false));
     element(library, "p", "muted", "Prompt・素材・seed・追加LoRAは保存設定を使用します。Turbo LoRAは系統別に変更できます。stepsはH3 Scene Settingsの共通設定を使います。モデル・サンプラー・解像度も現在のworkflow設定です。");
-    element(library, "p", "muted", "LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使用します。再開時もバッチLoRA設定で指定した変更を適用します。");
+    element(library, "p", "muted", "LoRA未記録の旧シーンは現在の追加LoRA・stepsとモード別4step用turboを使用します。再開時はバッチ開始時のturbo設定を引き継ぎます。");
     const loraSettings = element(library, "div", "section");
     button(loraSettings, "バッチLoRA設定", async () => {
       const response = await api.fetchApi("/object_info/LoraLoaderModelOnly");
       if (!response.ok) throw new Error("LoRA一覧を取得できませんでした。");
       const names = (await response.json()).LoraLoaderModelOnly.input.required.lora_name[0];
       loraSettings.replaceChildren();
-      element(loraSettings, "p", "muted", "追加LoRAは保存内容を維持します。Turboの変更は開始・再開時に未完了シーンへ適用します。変更しない系統は再開元の設定を引き継ぎます。");
+      element(loraSettings, "p", "muted", "追加LoRAは保存内容を維持します。設定は次に開始するバッチへ適用されます。");
       const config = node.properties.h3_batch_turbo ??= {};
       for (const [family, title] of [["R2V", "R2V用"], ["FL2V", "T2V・I2V・L2V・FL2V用"]]) {
         const group = element(loraSettings, "div", "section"); element(group, "strong", "", title);

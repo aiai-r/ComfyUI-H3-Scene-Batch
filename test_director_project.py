@@ -209,45 +209,6 @@ class DirectorProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '絶対パス'):
             project.project_path(str(self.root / 'missing'))
 
-    def test_mixed_mode_lora_preflight_and_repair_on_resume(self):
-        ids = [self.save('ref', 'R2V'), self.save('image', 'I2V'), self.save('image2', 'I2V')]
-        root = project.project_path('test')
-        manifest = root / 'scenes.json'
-        items = project.records(root)
-        for item in items:
-            family = 'R2V' if item['scene']['mode'] == 'R2V' else 'FL2V'
-            item['execution']['turbo'] = {'lora_name': 'minimaxh3\\' + director.TURBO_LORAS[family]}
-        project.write_json(manifest, items)
-        before = manifest.read_bytes()
-        names = ['cloud/' + director.TURBO_LORAS['R2V']]
-        with patch.object(project.folder_paths, 'get_filename_list', return_value=names), \
-             patch.object(project.folder_paths, 'get_full_path_or_raise', return_value='test.safetensors'):
-            with self.assertRaisesRegex(ValueError, '(?s)シーン 2 .*シーン 3') as error:
-                self.action('start', ids=ids, owner='one', result_node='1211', check_turbo=True)
-            self.assertIn(director.TURBO_LORAS['FL2V'], str(error.exception))
-            self.assertFalse((root / 'batch.json').exists())
-            names.append('cloud/' + director.TURBO_LORAS['FL2V'])
-            self.action('start', ids=ids, owner='one', result_node='1211', check_turbo=True)
-            attempt = self.action('next', owner='one')['batch']['attempt']
-            self.success(attempt['prompt_id'], run_name=attempt['run_name'])
-            state = self.action('status')['batch']
-            directory, completed = state['directory'], state['completed']
-            attempt = self.action('next', owner='one')['batch']['attempt']
-            self.queue.history[attempt['prompt_id']] = {'status': {'status_str': 'error'}}
-            self.action('status')
-            names[:] = ['fixed/fl4.safetensors']
-            batch_before = (root / 'batch.json').read_bytes()
-            with self.assertRaisesRegex(ValueError, 'シーン 2'):
-                self.action('resume', owner='two', check_turbo=True)
-            self.assertEqual((root / 'batch.json').read_bytes(), batch_before)
-            resumed = self.action('resume', owner='two', turbo={'FL2V': {'lora_name': names[0]}}, check_turbo=True)['batch']
-            self.assertEqual(resumed['completed'], completed)
-            self.assertEqual(resumed['directory'], directory)
-            self.assertEqual(resumed['turbo'], {'FL2V': {'lora_name': names[0]}})
-            self.assertEqual(resumed['positions'][len(completed)], 2)
-            self.assertEqual(self.action('resume', owner='two', turbo={}, check_turbo=True)['batch']['turbo'], resumed['turbo'])
-        self.assertEqual(manifest.read_bytes(), before)
-
     def test_external_asset_changes_with_identical_size_and_timestamp(self):
         external = self.root / 'external'
         external.mkdir()

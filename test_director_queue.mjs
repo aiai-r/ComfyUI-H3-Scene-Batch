@@ -134,12 +134,11 @@ assert.deepEqual(empty.output.extra.inputs, { model: ['turbo', 0], clip: ['clip'
 const remapped = structuredClone(savedRecord); remapped.execution.additional_loras[0].id = 'other-id';
 assert.deepEqual(sceneRequest(loraTemplate, 1200, remapped, { run_name: 'remap' }, true, {}).output.extra, defaults.output.extra);
 assert.throws(() => sceneRequest(template, 1200, savedRecord, { run_name: 'missing' }, true, {}), /復元/);
-normalizeLoraPaths(defaults.output, ['cloud/person.safetensors', 'cloud/fl4.safetensors']);
-assert.equal(JSON.parse(defaults.output[1200].inputs.scene_json).batch_lora.lora_name, 'cloud/fl4.safetensors');
+normalizeLoraPaths(defaults.output, ['cloud/person.safetensors']);
 assert.equal(defaults.output.extra.inputs.lora_1.lora, 'cloud/person.safetensors');
 assert.equal(defaults.output.extra.inputs.lora_2.lora, 'disabled.safetensors');
 assert.throws(() => normalizeLoraPaths(defaults.output, []), /LoRAが見つからない/);
-assert.throws(() => normalizeLoraPaths(defaults.output, ['cloud/fl4.safetensors', 'a/person.safetensors', 'b/person.safetensors']), /同名/);
+assert.throws(() => normalizeLoraPaths(defaults.output, ['a/person.safetensors', 'b/person.safetensors']), /同名/);
 assert.deepEqual(loraTemplate, loraBefore);
 assert.deepEqual(savedRecord, recordBefore);
 let postCount = 0;
@@ -149,11 +148,4 @@ api.fetchApi = async path => {
 };
 await assert.rejects(submitScene(defaults, 'missing-lora'), error => error.rejected && /LoRA/.test(error.message));
 assert.equal(postCount, 0, 'Missing additional LoRA must fail before queue submission');
-const missingTurbo = sceneRequest(loraTemplate, 1200, savedRecord, { run_name: 'missing-turbo' }, true, {});
-api.fetchApi = async path => {
-  if (path === '/prompt') postCount++;
-  return { ok: true, json: async () => ({ LoraLoaderModelOnly: { input: { required: { lora_name: [['cloud/person.safetensors']] } } } }) };
-};
-await assert.rejects(submitScene(missingTurbo, 'missing-turbo'), error => error.rejected && /fl4.safetensors/.test(error.message));
-assert.equal(postCount, 0, 'Turbo LoRA inside scene_json must be checked before queue submission');
 console.log('Director LoRA: mixed-mode override, saved strengths, disabled entries, empty stacks, cloud paths and missing-file rejection passed.');

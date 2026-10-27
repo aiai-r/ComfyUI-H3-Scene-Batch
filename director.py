@@ -67,10 +67,8 @@ def resolve_lora(name):
     available = folder_paths.get_filename_list("loras")
     exact = [item for item in available if item.replace("\\", "/") == normalized]
     matches = exact or [item for item in available if item.replace("\\", "/").split("/")[-1] == normalized.split("/")[-1]]
-    if not matches:
-        raise ValueError(f"LoRA一覧に指定ファイルがありません: {name}")
     if len(matches) != 1:
-        raise ValueError(f"同名LoRAが複数あります。パスを指定してください: {name} → {', '.join(matches)}")
+        raise ValueError(f"LoRAが見つからないか、同名ファイルが複数あります: {name}")
     folder_paths.get_full_path_or_raise("loras", matches[0])
     return matches[0]
 
