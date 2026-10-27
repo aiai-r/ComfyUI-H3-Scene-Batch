@@ -15,7 +15,7 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
-from .director import file_digest, reference_path
+from .director import TURBO_LORAS, file_digest, reference_path, resolve_lora
 
 
 PROJECT_LOCK = threading.Lock()
@@ -303,6 +303,26 @@ def project_action(data, queue):
                          'directory': 'batches/' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid4().hex[:8]}
             elif not state or len(state['completed']) == len(state['ids']):
                 raise ValueError("再開する未完了シーンがありません。")
+            if action == 'resume':
+                state['turbo'] = {**state.get('turbo', {}),
+                                  **{family: {'lora_name': preset['lora_name']} for family, preset in data.get('turbo', {}).items()}}
+            if data.get('check_turbo'):
+                items = records(root)
+                remaining = set(state['ids'][len(state['completed']):])
+                errors = []
+                for position, item in enumerate(items, 1):
+                    if item['id'] not in remaining:
+                        continue
+                    family = 'R2V' if item['scene']['mode'] == 'R2V' else 'FL2V'
+                    turbo = state['turbo'].get(family) or item.get('execution', {}).get('turbo')
+                    name = turbo['lora_name'] if turbo is not None else TURBO_LORAS[family]
+                    if name:
+                        try:
+                            resolve_lora(name)
+                        except (ValueError, FileNotFoundError) as error:
+                            errors.append(f"シーン {position} ({item['scene']['mode']}): {error}")
+                if errors:
+                    raise ValueError('Turbo LoRAの確認に失敗しました。バッチLoRA設定で指定を修正してください。\n' + '\n'.join(errors))
             state.update(status='ready', error='', owner=data['owner'])
         elif action == 'next':
             if not state or state['status'] != 'ready' or state['owner'] != data['owner']:

@@ -94,7 +94,13 @@ export function normalizeLoraPaths(output, names) {
     return matches[0];
   };
   for (const node of Object.values(output)) {
-    if (node.class_type === "Power Lora Loader (rgthree)") {
+    if (node.class_type === "H3SceneDirector") {
+      const scene = JSON.parse(node.inputs.scene_json);
+      if (scene.batch_lora?.lora_name) {
+        scene.batch_lora.lora_name = resolve(scene.batch_lora.lora_name);
+        node.inputs.scene_json = JSON.stringify(scene);
+      }
+    } else if (node.class_type === "Power Lora Loader (rgthree)") {
       for (const [key, item] of Object.entries(node.inputs)) {
         if (key.toLowerCase().startsWith("lora_") && item.on && (item.strength !== 0 || (item.strengthTwo ?? item.strength) !== 0)) item.lora = resolve(item.lora);
       }
@@ -253,6 +259,7 @@ export class DirectorQueue {
       const output = resultNode(template, this.node.id);
       let { batch } = await projectRequest(project, resume ? "resume" : "start", { ids, owner: this.owner, result_node: output,
         turbo: this.node.properties.h3_batch_turbo ?? {},
+        check_turbo: Object.values(template.output).some(n => n.class_type === "H3SceneTurboLora"),
         ...(startIndex !== null ? { start_index: startIndex } : {}) });
       while (!this.stopped && !["complete", "error", "stopped"].includes(batch.status)) {
         this.notify(batchProgress(batch));
