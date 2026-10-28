@@ -158,6 +158,9 @@ class H3SceneAssemble:
         audio = chain._assemble_generated_audio_records(records, sample_rate)
         directory = run
         directory.mkdir(parents=True, exist_ok=True)
+        scene_number = (scene or {}).get('output', {}).get('scene_number')
+        if scene_number is not None:
+            filename = f'{filename}_{scene_number:04d}'
         target = contained(directory, filename + '.mp4')
         target.parent.mkdir(parents=True, exist_ok=True)
         suffix = 1

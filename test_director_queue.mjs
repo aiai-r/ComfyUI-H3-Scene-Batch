@@ -73,7 +73,8 @@ api.fetchApi = async (path, options) => {
     state = { ids: ['scene12', 'scene13'], positions: [12, 13], total: 40, completed: [], status: 'ready' };
   } else if (body.action === 'next') {
     state.attempt = { prompt_id: `attempt${submissions.length}`, run_name: `run${submissions.length}`,
-      output: { project: '/workspace/MyScenes', directory: `batches/test/scene_${submissions.length + 12}` } }; state.status = 'submitting';
+      output: { project: '/workspace/MyScenes', directory: `batches/test/scene_${submissions.length + 12}`,
+        scene_number: submissions.length + 12 } }; state.status = 'submitting';
   } else if (body.action === 'load') {
     return { ok: !loadFails, json: async () => loadFails ? { error: 'Missing asset' } : record };
   } else if (body.action === 'fail') { state.status = 'error'; state.error = body.error; state.attempt = null; }
@@ -90,8 +91,9 @@ assert.match(messages.at(-1), /完了：シーン 13\/40 · 今回 2\/2/);
 assert.equal(submissions[0].prompt[1200].inputs.use_current_settings, true);
 assert.deepEqual(JSON.parse(submissions[0].prompt[1200].inputs.plan_json), record.plan);
 assert.deepEqual(JSON.parse(submissions[0].prompt[1200].inputs.scene_json).output,
-  { project: '/workspace/MyScenes', directory: 'batches/test/scene_12' });
+  { project: '/workspace/MyScenes', directory: 'batches/test/scene_12', scene_number: 12 });
 assert.equal(JSON.parse(submissions[1].prompt[1200].inputs.scene_json).output.directory, 'batches/test/scene_13');
+assert.equal(JSON.parse(submissions[1].prompt[1200].inputs.scene_json).output.scene_number, 13);
 loadFails = true;
 await assert.rejects(batchQueue.batch('/workspace/MyScenes', [], false, 12), /Missing asset/);
 assert.equal(state.status, 'error'); assert.equal(state.attempt, null);

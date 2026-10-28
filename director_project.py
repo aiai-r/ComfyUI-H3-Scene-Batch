@@ -312,6 +312,7 @@ def project_action(data, queue):
             state.setdefault('directory', 'batches/' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid4().hex[:8])
             position = state.get('positions', list(range(1, len(state['ids']) + 1)))[len(state['completed'])]
             state['attempt']['output'] = {'project': str(root),
+                'scene_number': position,
                 'directory': f"{state['directory']}/scene_{position:04d}_{state['attempt']['run_name'][9:]}"}
             state['status'] = 'submitting'
         elif action == 'stop':

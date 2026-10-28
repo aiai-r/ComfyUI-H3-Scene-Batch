@@ -270,6 +270,7 @@ class DirectorProjectTests(unittest.TestCase):
         batch_directory = state['directory']
         attempt = self.action('next', owner='one')['batch']['attempt']
         self.assertTrue(attempt['output']['directory'].startswith(batch_directory + '/scene_0012_'))
+        self.assertEqual(attempt['output']['scene_number'], 12)
         self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
         state = self.action('status')['batch']
         self.assertEqual(state['completed'][0]['id'], 'scene12')
@@ -284,12 +285,20 @@ class DirectorProjectTests(unittest.TestCase):
         self.assertNotEqual(retry['run_name'], failed['run_name'])
         self.assertEqual(resumed['directory'], batch_directory)
         self.assertTrue(retry['output']['directory'].startswith(batch_directory + '/scene_0013_'))
+        self.assertEqual(failed['output']['scene_number'], 13)
+        self.assertEqual(retry['output']['scene_number'], 13)
         self.assertNotEqual(retry['output']['directory'], failed['output']['directory'])
         self.action('stop')
         selected = self.action('start', ids=['scene40', 'scene3'], owner='two', result_node='1211')['batch']
         self.assertEqual(selected['ids'], ['scene3', 'scene40'])
         self.assertEqual(selected['positions'], [3, 40])
         self.assertNotEqual(selected['directory'], batch_directory)
+        attempt = self.action('next', owner='two')['batch']['attempt']
+        self.assertEqual(attempt['output']['scene_number'], 3)
+        self.success(attempt['prompt_id'], 'T2V', attempt['run_name'])
+        self.action('status')
+        attempt = self.action('next', owner='two')['batch']['attempt']
+        self.assertEqual(attempt['output']['scene_number'], 40)
 
     def test_video_path_containment_and_relocated_batch_results(self):
         identity = self.save('first', 'T2V')

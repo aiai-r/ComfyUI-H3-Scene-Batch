@@ -51,7 +51,7 @@ class DirectorOutputTests(unittest.TestCase):
         root.mkdir(parents=True, exist_ok=True)
         project.write_json(root / 'scenes.json', [])
         destination = {'project': str(root) if external else 'MyScenes',
-                       **({'directory': 'batches/batch-test/scene_0012_attempt1'} if external else {})}
+                       **({'directory': 'batches/batch-test/scene_0012_attempt1', 'scene_number': 12} if external else {})}
         scene = {'mode': 'T2V', 'assets': [], 'output': destination}
         chain = self.chain
         policy = chain.MiniMaxH3GenerationProfile().build('Hard picture + smooth audio', 'Generate audio')[0]
@@ -98,7 +98,7 @@ class DirectorOutputTests(unittest.TestCase):
         with patch.object(chain, '_assemble_generated_audio_records', side_effect=assemble_audio):
             path = output.H3SceneAssemble().assemble(manifest, 'scene', 256, scene)[0]
         self.assertEqual(Path(path).relative_to(root).as_posix(),
-                         'batches/batch-test/scene_0012_attempt1/scene.mp4' if external else 'renders/director_test/scene.mp4')
+                         'batches/batch-test/scene_0012_attempt1/scene_0012.mp4' if external else 'renders/director_test/scene.mp4')
         boundary = chain.sample_boundary_from_frames(73 - 39, 32000)
         torch.testing.assert_close(seen[0]['waveform'][..., :boundary], torch.full((2, boundary), 0.1))
         torch.testing.assert_close(seen[0]['waveform'], real_assembly(original_audio, 32000)['waveform'], rtol=0, atol=0)
@@ -118,7 +118,9 @@ class DirectorOutputTests(unittest.TestCase):
         self.assertEqual(list(self.root.rglob('*.safetensors')), [])
         self.assertEqual(list(self.root.rglob('checkpoints')), [])
         self.assertEqual(list(self.root.rglob('h3_chains')), [])
-        self.assertNotEqual(output.H3SceneAssemble().assemble(manifest, 'scene', 256, scene)[0], path)
+        repeated = output.H3SceneAssemble().assemble(manifest, 'scene', 256, scene)[0]
+        self.assertEqual(Path(repeated).stem, 'scene_0012_001' if external else 'scene_001')
+        self.assertTrue(Path(path).is_file())
         with self.assertRaises(ValueError):
             output.H3SceneAssemble().assemble(manifest, '../../../../../escape', 256, scene)
         with self.assertRaises(ValueError):
