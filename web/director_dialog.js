@@ -181,7 +181,39 @@ export function openLLMSettings(node) {
   const dialog = document.createElement("dialog");
   dialog.style.cssText = "width:min(900px,90vw);max-height:85vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:20px";
   const title = document.createElement("h3"); title.textContent = "LLM設定"; dialog.append(title);
-  const model = document.createElement("p"); model.textContent = config.loader.model; dialog.append(model);
+  const modelChoices = {};
+  for (const key of ["model", "mmproj"]) {
+    const row = document.createElement("label"); row.style.cssText = "display:block;margin:10px 0"; row.textContent = `${key} `;
+    const select = document.createElement("select"); select.setAttribute("aria-label", key); select.style.cssText = "display:block;width:100%;min-width:0";
+    const loading = document.createElement("option"); loading.textContent = "一覧を読み込み中…"; select.append(loading); select.disabled = true;
+    modelChoices[key] = select; row.append(select); dialog.append(row);
+    select.onchange = () => {
+      config.loader[key] = select.value; node.graph?.change();
+      modelStatus.textContent = "変更しました。workflowも保存してください。";
+    };
+  }
+  const modelStatus = document.createElement("p"); modelStatus.setAttribute("role", "status");
+  modelStatus.textContent = "この環境のLlama-cpp Model Loaderと同じ一覧です。選択はすぐに反映されます。変更後はworkflowも保存してください。";
+  dialog.append(modelStatus);
+  async function loadModels() {
+    const response = await api.fetchApi("/object_info/llama_cpp_model_loader", { cache: "no-store" });
+    if (!response.ok) throw new Error("LLM一覧を取得できません。LLM設定を開き直してください。");
+    const inputs = (await response.json()).llama_cpp_model_loader?.input?.required;
+    if (!inputs) throw new Error("Llama-cpp Model Loaderがありません。カスタムノードの導入状態を確認してください。");
+    for (const [key, select] of Object.entries(modelChoices)) {
+      const names = inputs[key][0], saved = config.loader[key];
+      select.replaceChildren();
+      if (!names.includes(saved)) {
+        const missing = document.createElement("option"); missing.value = ""; missing.disabled = true;
+        missing.textContent = saved ? `未選択（この環境にない保存値：${saved}）` : "選択してください"; select.append(missing);
+      }
+      for (const name of names) {
+        const option = document.createElement("option"); option.value = name; option.textContent = name; select.append(option);
+      }
+      select.value = names.includes(saved) ? saved : ""; select.disabled = !names.length;
+    }
+  }
+  loadModels().catch(error => { modelStatus.textContent = error.message; });
   for (const [stage, name] of [["story", "ストーリー"], ["prompt", "Prompt・画像解析の整理"]]) {
     for (const [key, label] of [["seed", "seed"], ["max_tokens", "最大出力トークン"], ["temperature", "temperature"]]) {
       if (key === "seed" && stage === "story") continue;
