@@ -43,20 +43,21 @@ class H3SceneConditioning:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "scene": ("H3_SCENE",), "clip": ("CLIP",), "vae": ("VAE",),
+            "clip": ("CLIP",), "vae": ("VAE",),
             "prompt": ("STRING", {"forceInput": True}),
             "width": ("INT", {"forceInput": True}), "height": ("INT", {"forceInput": True}),
             "length": ("INT", {"forceInput": True}),
             "clip_index": ("INT", {"forceInput": True}), "clip_count": ("INT", {"forceInput": True}),
-        }, "optional": {"audio_vae": ("VAE",), "references": ("H3_SCENE_REFERENCES",)}}
+        }, "optional": {"scene": ("H3_SCENE",), "audio_vae": ("VAE",), "references": ("H3_SCENE_REFERENCES",)}}
 
     RETURN_TYPES = ("CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "latent")
     FUNCTION = "build"
     CATEGORY = "H3 Scene Batch"
 
-    def build(self, scene, clip, vae, prompt, width, height, length, clip_index, clip_count, audio_vae=None, references=None):
-        scene = read_scene(json.dumps(scene))
+    def build(self, clip, vae, prompt, width, height, length, clip_index, clip_count, scene=None, audio_vae=None, references=None):
+        # Without a Director scene (folder batch workflows), the encoded references are an R2V scene.
+        scene = read_scene(json.dumps(scene if scene is not None else {"mode": "R2V", "assets": []}))
         if scene["mode"] == "R2V" and references is not None:
             items, blocks = references[(width, height, h3.temporal_shape(length)[0])]
             tokens = clip.tokenize(prompt, minimax_ref_items=items)

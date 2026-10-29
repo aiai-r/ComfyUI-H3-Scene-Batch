@@ -48,16 +48,23 @@ def read_scene(text):
 class H3ScenePlanFromText:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"text": ("STRING", {"forceInput": True})}}
+        return {"required": {"text": ("STRING", {"forceInput": True}),
+                             "base_seed": ("INT", {"forceInput": True})}}
 
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("plan_json", "status")
     FUNCTION = "read"
     CATEGORY = "H3 Scene Batch"
 
-    def read(self, text):
+    def read(self, text, base_seed):
         shots, problems = read_scene(text)
+        # Director (prepare_plan) gives every cut the same base seed.
+        for shot in shots:
+            shot["seed"] = base_seed
         total = sum(s["duration_seconds"] for s in shots)
         status = "\n".join([f"{len(shots)}カット・合計{total:g}秒", *problems])
         print("[H3 Scene Plan From Text] " + status.replace("\n", " / "))
-        return (json.dumps({"shots": shots}, ensure_ascii=False), status)
+        # Director stops before video generation when the LLM result has problems.
+        if problems:
+            raise ValueError("LLMの結果に問題があります：" + " ".join(problems))
+        return (json.dumps({"prompt_prefix": "", "shots": shots}, ensure_ascii=False), status)

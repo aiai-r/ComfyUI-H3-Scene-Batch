@@ -24,6 +24,9 @@ NODE_DISPLAY_NAME_MAPPINGS['H3SceneVideoOnlySave'] = 'H3 Scene Video Only Save'
 from .director_scene_text import H3ScenePlanFromText
 NODE_CLASS_MAPPINGS['H3ScenePlanFromText'] = H3ScenePlanFromText
 NODE_DISPLAY_NAME_MAPPINGS['H3ScenePlanFromText'] = 'H3 Scene Plan From Text'
+from .director_requests import H3SceneAnalysisRequest, H3SceneWholeRequest
+NODE_CLASS_MAPPINGS.update(H3SceneAnalysisRequest=H3SceneAnalysisRequest, H3SceneWholeRequest=H3SceneWholeRequest)
+NODE_DISPLAY_NAME_MAPPINGS.update(H3SceneAnalysisRequest='H3 Scene Analysis Request', H3SceneWholeRequest='H3 Scene Whole Request')
 from .i2v_scene import H3I2VScene, H3VideoPreview
 NODE_CLASS_MAPPINGS['H3I2VScene'] = H3I2VScene
 NODE_DISPLAY_NAME_MAPPINGS['H3I2VScene'] = 'H3 I2V Scene (LLM)'
