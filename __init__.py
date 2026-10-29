@@ -21,6 +21,9 @@ NODE_CLASS_MAPPINGS['H3SceneLoopEnd'] = H3SceneLoopEnd
 NODE_DISPLAY_NAME_MAPPINGS['H3SceneLoopEnd'] = 'H3 Scene Loop End'
 NODE_CLASS_MAPPINGS['H3SceneVideoOnlySave'] = H3SceneVideoOnlySave
 NODE_DISPLAY_NAME_MAPPINGS['H3SceneVideoOnlySave'] = 'H3 Scene Video Only Save'
+from .director_scene_text import H3ScenePlanFromText
+NODE_CLASS_MAPPINGS['H3ScenePlanFromText'] = H3ScenePlanFromText
+NODE_DISPLAY_NAME_MAPPINGS['H3ScenePlanFromText'] = 'H3 Scene Plan From Text'
 from .i2v_scene import H3I2VScene, H3VideoPreview
 NODE_CLASS_MAPPINGS['H3I2VScene'] = H3I2VScene
 NODE_DISPLAY_NAME_MAPPINGS['H3I2VScene'] = 'H3 I2V Scene (LLM)'
