@@ -3,7 +3,7 @@ from .director import H3SceneDirector, H3SceneTurboLora
 from .director_media import H3SceneConditioning, H3SceneReferenceImages
 from .director_references import H3ScenePrepareReferences, H3SceneEncodeReferences
 from .director_project import H3SceneResult
-from .director_output import H3SceneSegmentSave, H3SceneAssemble, H3SceneLoopEnd
+from .director_output import H3SceneSegmentSave, H3SceneAssemble, H3SceneLoopEnd, H3SceneVideoOnlySave
 
 NODE_CLASS_MAPPINGS["H3SceneDirector"] = H3SceneDirector
 NODE_DISPLAY_NAME_MAPPINGS["H3SceneDirector"] = "H3 Scene Director"
@@ -19,6 +19,8 @@ NODE_CLASS_MAPPINGS.update(H3SceneSegmentSave=H3SceneSegmentSave, H3SceneAssembl
 NODE_DISPLAY_NAME_MAPPINGS.update(H3SceneSegmentSave="H3 Scene Segment Save", H3SceneAssemble="H3 Scene Assemble")
 NODE_CLASS_MAPPINGS['H3SceneLoopEnd'] = H3SceneLoopEnd
 NODE_DISPLAY_NAME_MAPPINGS['H3SceneLoopEnd'] = 'H3 Scene Loop End'
+NODE_CLASS_MAPPINGS['H3SceneVideoOnlySave'] = H3SceneVideoOnlySave
+NODE_DISPLAY_NAME_MAPPINGS['H3SceneVideoOnlySave'] = 'H3 Scene Video Only Save'
 from .i2v_scene import H3I2VScene, H3VideoPreview
 NODE_CLASS_MAPPINGS['H3I2VScene'] = H3I2VScene
 NODE_DISPLAY_NAME_MAPPINGS['H3I2VScene'] = 'H3 I2V Scene (LLM)'

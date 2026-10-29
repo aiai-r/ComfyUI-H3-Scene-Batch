@@ -176,3 +176,47 @@ class H3SceneAssemble:
             picture.unlink(missing_ok=True)
             temporary.unlink(missing_ok=True)
         return (str(target),)
+
+
+class H3SceneVideoOnlySave:
+    # Join the cuts, keep only the final MP4 and delete every work file of the run.
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {'required': {'manifest': ('H3_CHAIN_MANIFEST',),
+                             'filename_prefix': ('STRING', {'default': 'video/MiniMax_H3_loop/scene'}),
+                             'audio_bitrate': ('INT', {'default': 256, 'min': 64, 'max': 512})}}
+
+    RETURN_TYPES = ('STRING',)
+    RETURN_NAMES = ('video_path',)
+    FUNCTION = 'save'
+    OUTPUT_NODE = True
+    CATEGORY = 'H3 Scene Batch'
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float('nan')
+
+    def save(self, manifest, filename_prefix, audio_bitrate):
+        import shutil
+        import folder_paths
+        run = run_directory(None, manifest['run_name'])
+        output = folder_paths.get_output_directory()
+        chains = os.path.realpath(os.path.join(output, 'h3_chains'))
+        chain_run = os.path.realpath(os.path.join(chains, manifest['run_name']))
+        try:
+            joined = H3SceneAssemble().assemble(manifest, 'scene', audio_bitrate)[0]
+            folder, name, counter, _, _ = folder_paths.get_save_image_path(filename_prefix, output)
+            os.makedirs(folder, exist_ok=True)
+            target = os.path.join(folder, f'{name}_{counter:05}_.mp4')
+            shutil.move(joined, target)
+        finally:
+            shutil.rmtree(run, ignore_errors=True)
+            if os.path.dirname(chain_run) == chains:
+                shutil.rmtree(chain_run, ignore_errors=True)
+            # Remove parent folders only when nothing else is left in them.
+            for empty in (run.parent, run.parent.parent, run.parent.parent.parent, chains):
+                try:
+                    os.rmdir(empty)
+                except OSError:
+                    pass
+        return {'ui': {'text': [target]}, 'result': (target,)}
