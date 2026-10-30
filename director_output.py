@@ -4,6 +4,7 @@ import sys
 from uuid import uuid4
 
 import nodes
+from comfy_execution.graph_utils import is_link
 from comfy_extras.nodes_audio import load as load_audio
 
 from .director_project import contained, project_path, write_json
@@ -25,6 +26,7 @@ class H3SceneLoopEnd:
     def INPUT_TYPES(cls):
         return {'required': {'flow': ('H3_CHAIN_FLOW', {'rawLink': True}), 'state': ('H3_CHAIN_STATE',),
                              'images': ('IMAGE',), 'sampled_latent': ('LATENT',), 'segment': ('H3_CHAIN_SEGMENT',)},
+                'optional': {'plan': ('H3_CHAIN_PLAN',), 'references': ('H3_SCENE_REFERENCES',)},
                 'hidden': {'dynprompt': 'DYNPROMPT', 'unique_id': 'UNIQUE_ID'}}
 
     RETURN_TYPES = ('H3_CHAIN_MANIFEST', 'STRING', 'IMAGE', 'LATENT')
@@ -32,8 +34,9 @@ class H3SceneLoopEnd:
     FUNCTION = 'end'
     CATEGORY = 'H3 Scene Batch'
 
-    def end(self, flow, state, images, sampled_latent, segment, dynprompt=None, unique_id=None):
+    def end(self, flow, state, images, sampled_latent, segment, plan=None, references=None, dynprompt=None, unique_id=None):
         chain = context_loop()
+        kept = {'plan': plan, 'references': references}
         plan, index = state['plan'], int(state['index'])
         if segment['index'] != index:
             raise ValueError('Directorのカットと生成結果の番号が一致しません。')
@@ -43,7 +46,18 @@ class H3SceneLoopEnd:
                       'previous_latent': chain._compact_latent(sampled_latent),
                       'segments': [*state['segments'], segment]}
         if index < len(plan['shots']):
-            return chain.MiniMaxH3ChainLoopEnd()._recurse(flow, next_state, dynprompt, unique_id)
+            expanded = chain.MiniMaxH3ChainLoopEnd()._recurse(flow, next_state, dynprompt, unique_id)
+            # The next cut gets the plan and encoded references as values, so it never re-runs the
+            # nodes before the loop (LLM, image folder) even when ComfyUI keeps no cache (--cache-none).
+            own = dynprompt.get_node(unique_id)['inputs']
+            replace = [(list(own[name]), value) for name, value in kept.items()
+                       if value is not None and is_link(own.get(name))]
+            for node in expanded['expand'].values():
+                for key, value in node['inputs'].items():
+                    for link, literal in replace:
+                        if is_link(value) and list(value) == link:
+                            node['inputs'][key] = literal
+            return expanded
         segments = next_state['segments']
         if [s['index'] for s in segments] != list(range(1, len(plan['shots']) + 1)):
             raise ValueError('Directorの完成カットが揃っていません。')
