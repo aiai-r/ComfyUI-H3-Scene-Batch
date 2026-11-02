@@ -66,9 +66,34 @@ const R2V_PROMPT_SYSTEM_PROMPT = [
   R2V_REFERENCE_RULES,
 ].join("\n");
 
+// Quoted lines in the user's text: 「…」, “…” and "…".
+export function suppliedDialogues(source) {
+  return [...source.matchAll(/「([^「」\n]+)」|“([^“”\n]+)”|"([^"\n]+)"/g)].map(m => (m[1] ?? m[2] ?? m[3]).trim()).filter(Boolean);
+}
+
+const dialogueKey = value => value.replace(/[\s～〜~…、。,.!?！？「」『』"“”'‘’]/g, "");
+
+// Requested lines that are missing from the <d> dialogue in the finished prompts.
+// Each requested line uses up one spoken line, so 「こんにちは」 is not found inside 「こんにちは～」.
+export function missingDialogues(source, prompts) {
+  const exact = value => value.replace(/\s/g, "");
+  let spoken = prompts.flatMap(p => [...p.matchAll(/<d>([\s\S]*?)<\/d>/g)].map(m => m[1].replace(/^\s*\[[^\]]*\]/, "")));
+  let lines = suppliedDialogues(source);
+  for (const same of [(a, b) => exact(a) === exact(b), (a, b) => dialogueKey(a) === dialogueKey(b), (a, b) => dialogueKey(a).includes(dialogueKey(b))]) {
+    lines = lines.filter(line => {
+      const index = spoken.findIndex(value => same(value, line));
+      if (index < 0) return true;
+      spoken = spoken.filter((_, i) => i !== index);
+      return false;
+    });
+  }
+  return lines;
+}
+
 // Builds the script-owned R2V sections around the LLM's three sections, as Comfyui-Minimax-H3-Promptor does.
 // definitions: subject lines from the saved image analyses. media: audio/video references [{ kind, label }].
-export function completeR2VPrompt(text, definitions, media, duration) {
+// source: the user's instruction or story; its lines left in plain quotes become <d> dialogue.
+export function completeR2VPrompt(text, definitions, media, duration, source = "") {
   const kept = [], sound = [], music = [];
   let current = null;
   for (const line of text.trim().replace(/^```(?:text|markdown)?\s*/i, "").replace(/\s*```$/, "").split(/\r?\n/)) {
@@ -83,6 +108,16 @@ export function completeR2VPrompt(text, definitions, media, duration) {
   body = body.replace(/^(?:subject_definitions|summary|retention_analysis)\s*:[\s\S]*?(?=^detailed_description\s*:|^\[Shot\s+\d)/im, "");
   body = body.replace(/^\s*detailed_description\s*:\s*/i, "").trim();
   if (!body) throw new Error("LLMの返答にシーン本文（detailed_description）がありません。再作成してください。");
+  for (const line of suppliedDialogues(source)) {
+    const tag = `<d>[${/[぀-ヿ㐀-鿿]/.test(line) ? "Japanese" : "English"}] ${line}</d>`;
+    // Only text outside existing <d> blocks (even indexes) is rewritten.
+    const parts = body.split(/(<d>[\s\S]*?<\/d>)/);
+    for (let i = 0; i < parts.length; i += 2) {
+      const quoted = [`"${line}"`, `“${line}”`, `「${line}」`].find(q => parts[i].includes(q));
+      if (quoted) { parts[i] = parts[i].replace(quoted, tag); break; }
+    }
+    body = parts.join("");
+  }
   const soundscape = sound.join(" ").trim() || "Ambient room tone and subtle environmental sound effects matching the scene actions.";
   const score = music.join(" ").trim() || "N/A";
 
@@ -103,8 +138,7 @@ export function completeR2VPrompt(text, definitions, media, duration) {
   const retention = ["retention_analysis:"];
   for (const subject of subjects) {
     const shots = appearances[subject] ?? appearances[`<Picture ${subject.match(/\d+/)[0]}>`] ?? [];
-    const trait = subjectDefinitions.match(new RegExp(`${subject}.*?with (.*?)\\.`, "i"))?.[1]?.trim();
-    retention.push(`${subject} (appears in ${shots.length ? shots.join(", ") : "target video"}): fully_preserved - ${trait ? `${trait} maintained.` : "visual appearance and features maintained."}`);
+    retention.push(`${subject} (appears in ${shots.length ? shots.join(", ") : "target video"}): fully_preserved - visual appearance and features maintained.`);
   }
   for (const picture of new Set(subjectDefinitions.match(/<Picture\s+\d+>/g) ?? [])) {
     if (appearances[picture] && !subjects.includes(`<Subject ${picture.match(/\d+/)[0]}>`)) {
@@ -118,7 +152,7 @@ export function completeR2VPrompt(text, definitions, media, duration) {
 
   return [
     `subject_definitions:\n${subjectDefinitions}`,
-    `summary:\n[reference generation] A ${Number(duration).toFixed(1)}-second live-action sequence executing the requested visual narrative across shots using the defined references.`,
+    `summary:\n[reference generation] A ${Number(duration).toFixed(1)}-second sequence executing the requested visual narrative across shots using the defined references.`,
     retention.join("\n"),
     `detailed_description:\n${body}`,
     `overall_soundscape:\n${soundscape}`,
