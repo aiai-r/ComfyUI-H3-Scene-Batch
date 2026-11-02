@@ -71,25 +71,6 @@ export function suppliedDialogues(source) {
   return [...source.matchAll(/「([^「」\n]+)」|“([^“”\n]+)”|"([^"\n]+)"/g)].map(m => (m[1] ?? m[2] ?? m[3]).trim()).filter(Boolean);
 }
 
-const dialogueKey = value => value.replace(/[\s～〜~…、。,.!?！？「」『』"“”'‘’]/g, "");
-
-// Requested lines that are missing from the <d> dialogue in the finished prompts.
-// Each requested line uses up one spoken line, so 「こんにちは」 is not found inside 「こんにちは～」.
-export function missingDialogues(source, prompts) {
-  const exact = value => value.replace(/\s/g, "");
-  let spoken = prompts.flatMap(p => [...p.matchAll(/<d>([\s\S]*?)<\/d>/g)].map(m => m[1].replace(/^\s*\[[^\]]*\]/, "")));
-  let lines = suppliedDialogues(source);
-  for (const same of [(a, b) => exact(a) === exact(b), (a, b) => dialogueKey(a) === dialogueKey(b), (a, b) => dialogueKey(a).includes(dialogueKey(b))]) {
-    lines = lines.filter(line => {
-      const index = spoken.findIndex(value => same(value, line));
-      if (index < 0) return true;
-      spoken = spoken.filter((_, i) => i !== index);
-      return false;
-    });
-  }
-  return lines;
-}
-
 // Builds the script-owned R2V sections around the LLM's three sections, as Comfyui-Minimax-H3-Promptor does.
 // definitions: subject lines from the saved image analyses. media: audio/video references [{ kind, label }].
 // source: the user's instruction or story; its lines left in plain quotes become <d> dialogue.
