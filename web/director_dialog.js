@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { draftGraph, readDraft, completeR2VPrompt, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
+import { draftGraph, readDraft, completeR2VPrompt, missingDialogues, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
 
 export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
@@ -158,6 +158,11 @@ export class DirectorLLM {
     const read = (text, index) => scene.mode !== "R2V" ? readDraft(text, working, index)
       : [{ index, prompt: completeR2VPrompt(text, analysis, media,
         working.shots[index].duration_seconds ?? working.defaults?.duration_seconds ?? 15, story.trim() ? story : state.instruction) }];
+    // Requested lines the LLM dropped are returned with the prompts; the caller stops before generation.
+    const checked = drafts => {
+      if (scene.mode === "R2V") drafts.missing = missingDialogues(story.trim() ? story : state.instruction, drafts.map(d => d.prompt));
+      return drafts;
+    };
     if (action === "story" || action === "all") {
       story = await this.execute(graph("story"), "ストーリー作成中…");
       onStory(story);
@@ -173,10 +178,10 @@ export class DirectorLLM {
         working.shots[index] = { ...working.shots[index], prompt: draft.prompt };
         drafts.push(draft);
       }
-      return drafts;
+      return checked(drafts);
     }
     const text = await this.execute(graph("prompt"), "Prompt作成中…");
-    return read(text, selected);
+    return checked(read(text, selected));
   }
 }
 

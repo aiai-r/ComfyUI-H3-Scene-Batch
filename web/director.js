@@ -265,6 +265,8 @@ function attachDirector(node) {
           collect();
           if (JSON.stringify(scene) !== JSON.stringify(sourceScene)) throw new Error("処理中に素材・モードが変わりました。Promptを再作成してください。");
           plan = applyDraft(plan, baseline, prompts); render(); save();
+          // Notice only; generation continues.
+          if (prompts.missing?.length) error.textContent = "指示のセリフがPromptに入っていません：" + prompts.missing.map(line => `「${line}」`).join(" ");
           if (generating) {
             if (llm.cancelled) return;
             await queue.generate(structuredClone({ plan, scene }));
