@@ -1,5 +1,5 @@
 import { api } from "../../scripts/api.js";
-import { draftGraph, readDraft, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
+import { draftGraph, readDraft, completeR2VPrompt, sceneGraph, readScene, sceneAssets, referenceDescriptions, referenceDefinitions, imageAnalysisKey, SYSTEM_PROMPTS, renderSystemPrompt } from "./director_llm.js";
 
 export class DirectorLLM {
   constructor(node, notify) { this.node = node; this.notify = notify; this.cancelled = false; this.promptId = null; }
@@ -153,6 +153,11 @@ export class DirectorLLM {
       value.writer.inputs.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       return value;
     };
+    // R2V: the LLM writes the scene body and sound; the script adds the reference sections.
+    const media = referenceDescriptions(scene).filter(r => r.kind !== "image");
+    const read = (text, index) => scene.mode !== "R2V" ? readDraft(text, working, index)
+      : [{ index, prompt: completeR2VPrompt(text, analysis, media,
+        working.shots[index].duration_seconds ?? working.defaults?.duration_seconds ?? 15) }];
     if (action === "story" || action === "all") {
       story = await this.execute(graph("story"), "ストーリー作成中…");
       onStory(story);
@@ -164,14 +169,14 @@ export class DirectorLLM {
         if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
         const text = await this.execute(graph("prompt", index), `Prompt作成中：${index + 1}/${working.shots.length}カット…`);
         if (this.cancelled) throw new Error("LLM処理を中止しました。確定Promptは変更していません。");
-        const [draft] = readDraft(text, working, index);
+        const [draft] = read(text, index);
         working.shots[index] = { ...working.shots[index], prompt: draft.prompt };
         drafts.push(draft);
       }
       return drafts;
     }
     const text = await this.execute(graph("prompt"), "Prompt作成中…");
-    return readDraft(text, plan, selected);
+    return read(text, selected);
   }
 }
 
@@ -243,7 +248,7 @@ export function openLLMSettings(node) {
   editor.setAttribute("aria-label", "システムPrompt本文"); editor.style.cssText = "display:block;width:100%;box-sizing:border-box;margin:10px 0;resize:vertical";
   dialog.append(editor);
   const variables = document.createElement("p");
-  variables.textContent = "{{mode_instructions}} はモードの指示、{{continuity_instructions}} は前カット説明の指示、{{output_instructions}} は対象カットと出力形式に展開されます。下の展開例で全文を確認できます。必要に応じて変数も本文に置き換えて編集できます。R2V以外のPrompt作成では shots / prompt のJSON出力形式を維持してください。R2VのPrompt作成は公式の6項目をそのまま出力します。";
+  variables.textContent = "{{mode_instructions}} はモードの指示、{{continuity_instructions}} は前カット説明の指示、{{output_instructions}} は対象カットと出力形式に展開されます。下の展開例で全文を確認できます。必要に応じて変数も本文に置き換えて編集できます。R2V以外のPrompt作成では shots / prompt のJSON出力形式を維持してください。R2VのPrompt作成は本文・環境音・BGMの3項目だけを出力し、参照定義・概要・保持分析はスクリプトが補完します。";
   dialog.append(variables);
   const status = document.createElement("p"); status.setAttribute("role", "status"); dialog.append(status);
   const save = document.createElement("button"); save.textContent = "保存"; dialog.append(save);

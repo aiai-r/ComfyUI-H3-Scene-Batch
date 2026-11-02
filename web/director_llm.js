@@ -21,22 +21,110 @@ const R2V_REFERENCE_RULES = [
   "- Do not turn ordinary mentions of the target video, generated speech, ambience, or BGM into reference tags. Only actual reference assets declared by the user get <Audio N> or <Video N>.",
   "- No images, audio or video are attached to this call. For audio/video references use the user's declared roles, descriptions, transcripts and timing; never claim to have watched or listened to files not supplied to this call.",
   "- Picture, Video and Audio numbering are independent and 1-based and follow the references list.",
-  "- Define <Subject N> for reusable visual subjects, citing their source <Picture N> or <Video N>. Subject numbers do not have to match picture numbers. Distinguish reference-only audio from direct audio reuse.",
-  "- Use only <Subject N>, <Picture N>, <Audio N> and <Video N> as reference labels. Other bracketed words in image_analysis, such as <Environment>, are not labels; define such content as a <Subject N>.",
-  "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve the supplied dialogue and its original language inside <d>...</d>. Do not add BGM when the user requests none. Use (S1), (S2), <scenetrans>, and <cutoff> according to the guide. Do not invent reference tags for unused assets.",
+  "- Use only <Subject N>, <Picture N>, <Audio N> and <Video N> as reference labels, exactly as defined in image_analysis and references. Other bracketed words in image_analysis, such as <Environment>, are not labels.",
+  "- Follow the requested duration, actions, reference roles, spoken words, sound, and music choices. Preserve the supplied dialogue and its original language inside <d>...</d>. Do not add BGM when the user requests none. Do not invent reference tags for unused assets.",
+].join("\n");
+
+// Keep the prompt to what the user asked for; no added direction.
+const FIDELITY_RULES = [
+  "FIDELITY RULES (highest priority):",
+  "- Describe only what the user's instruction requests. Do not add camera movements, framing changes, extra shots or cuts, lighting or lens effects, facial expressions, gestures, emotions, story beats or symbolism that the instruction does not request.",
+  "- Write camera movement or framing only when the instruction specifies it, and then exactly as specified.",
+  "- Keep every requested action, dialogue line and sound in the requested order. Do not drop or merge any of them.",
+].join("\n");
+
+const R2V_FORMAT_RULES = [
+  "OUTPUT FORMAT:",
+  "Return exactly these three plain-text sections in this order, with no Markdown fence, preface or commentary. subject_definitions, summary and retention_analysis are added by a script; never write them.",
   "",
-  "The following is the supplied full-reference writing guide. Apply its rules to the current request; its examples are format examples, not facts about the input images.",
+  "detailed_description:",
+  "[Shot 1] ...",
   "",
-  H3_REF_GUIDE,
+  "overall_soundscape:",
+  "...",
+  "",
+  "non_diegetic_music:",
+  "...",
+  "",
+  "- Write visual, action and sound descriptions in English. Copy dialogue verbatim in its original language inside <d>[Language] ...</d>.",
+  "- [Shot 1] has no timestamp. A later shot starts with [Shot N] At MM:SS.mmm, and every time stays within the selected cut's duration.",
+  "- At a subject's first appearance, identify it with its <Subject N> label and the visible features from its saved definition so the shot is unambiguous.",
+  "- Give each vocal source a stable speaker ID (S1), (S2) in order of first speech. A speaking subject is written <Subject N> (Sx); an off-screen speaker without a subject is a short voice description followed by (Sx). When the user maps a voice to <Audio N>, cite <Audio N> where that speaker talks.",
+  "- overall_soundscape: ambience and physical sounds only, no dialogue. Follow the user's sound instructions.",
+  "- non_diegetic_music: write N/A unless the user requests music.",
 ].join("\n");
 
 const R2V_PROMPT_SYSTEM_PROMPT = [
-  "The input is a JSON request from a scene editor. instruction is the user's direct instruction. story, when not empty, is the authoritative scene plot and takes priority over instruction or shared_prompt. Use instruction only when story is empty. image_analysis holds saved descriptions of the reference images, and references lists the attached media labels in order. Write the H3 prompt for the one cut identified by selected_cut in cuts, using its duration_seconds. When the scene has several cuts, include only the events that belong to the selected cut. When previous_prompt is supplied, read its ending situation and continue directly from that ending: start [Shot 1] from that concrete state and do not repeat completed actions or dialogue. Convert the input to the H3 format below. Preserve the planned action order, staging, duration, reference mapping, dialogue and audio constraints. Do not brainstorm a different story.",
+  "The input is a JSON request from a scene editor. instruction is the user's direct instruction. story, when not empty, is the authoritative scene plot and takes priority over instruction or shared_prompt. Use instruction only when story is empty. image_analysis holds saved descriptions of the reference images, and references lists the attached media labels in order. Write the H3 prompt for the one cut identified by selected_cut in cuts, using its duration_seconds. When the scene has several cuts, include only the events that belong to the selected cut. When previous_prompt is supplied, read its ending situation and continue directly from that ending: start [Shot 1] from that concrete state and do not repeat completed actions or dialogue. Preserve the planned action order, duration, reference mapping, dialogue and audio constraints. Do not brainstorm a different story.",
   "",
-  "You rewrite Japanese or English user instructions into a MiniMax H3 R2V (full-reference) video prompt. Return only the six plain-text sections specified below, with no Markdown fence, preface, or commentary.",
+  "You rewrite Japanese or English user instructions into the body of a MiniMax H3 R2V (full-reference) video prompt.",
+  "",
+  FIDELITY_RULES,
+  "",
+  R2V_FORMAT_RULES,
   "",
   R2V_REFERENCE_RULES,
 ].join("\n");
+
+// Builds the script-owned R2V sections around the LLM's three sections, as Comfyui-Minimax-H3-Promptor does.
+// definitions: subject lines from the saved image analyses. media: audio/video references [{ kind, label }].
+export function completeR2VPrompt(text, definitions, media, duration) {
+  const kept = [], sound = [], music = [];
+  let current = null;
+  for (const line of text.trim().replace(/^```(?:text|markdown)?\s*/i, "").replace(/\s*```$/, "").split(/\r?\n/)) {
+    const stripped = line.trim(), low = stripped.toLowerCase();
+    const target = /^(overall_soundscape|audio|sound|soundscape|sfx)\s*:/.test(low) ? sound
+      : /^(non_diegetic_music|non-diegetic_music|music|score|soundtrack)\s*:/.test(low) ? music : null;
+    if (target) { current = target; const value = stripped.split(":").slice(1).join(":").trim(); if (value) target.push(value); continue; }
+    if (current) { if (stripped) current.push(stripped); else current = null; }
+    else kept.push(line);
+  }
+  let body = kept.join("\n").trim();
+  body = body.replace(/^(?:subject_definitions|summary|retention_analysis)\s*:[\s\S]*?(?=^detailed_description\s*:|^\[Shot\s+\d)/im, "");
+  body = body.replace(/^\s*detailed_description\s*:\s*/i, "").trim();
+  if (!body) throw new Error("LLMの返答にシーン本文（detailed_description）がありません。再作成してください。");
+  const soundscape = sound.join(" ").trim() || "Ambient room tone and subtle environmental sound effects matching the scene actions.";
+  const score = music.join(" ").trim() || "N/A";
+
+  const lines = [definitions.trim()];
+  for (const { kind, label } of media) {
+    lines.push(kind === "audio" ? `${label} is the reference audio track for voice timbre and synchronization.`
+      : `${label} is the source video for camera movement and temporal structure.`);
+  }
+  const subjectDefinitions = lines.filter(Boolean).join("\n");
+
+  const appearances = {};
+  for (const shot of body.split(/(?=\[Shot\s+\d+)/i)) {
+    const number = shot.match(/\[Shot\s+(\d+)/i)?.[1];
+    if (!number) continue;
+    for (const tag of new Set(shot.match(/<(?:Subject|Picture|Video|Audio)\s+\d+>/g) ?? [])) (appearances[tag] ??= []).push(`[Shot ${number}]`);
+  }
+  const subjects = [...new Set(subjectDefinitions.match(/<Subject\s+\d+>/g) ?? [])];
+  const retention = ["retention_analysis:"];
+  for (const subject of subjects) {
+    const shots = appearances[subject] ?? appearances[`<Picture ${subject.match(/\d+/)[0]}>`] ?? [];
+    const trait = subjectDefinitions.match(new RegExp(`${subject}.*?with (.*?)\\.`, "i"))?.[1]?.trim();
+    retention.push(`${subject} (appears in ${shots.length ? shots.join(", ") : "target video"}): fully_preserved - ${trait ? `${trait} maintained.` : "visual appearance and features maintained."}`);
+  }
+  for (const picture of new Set(subjectDefinitions.match(/<Picture\s+\d+>/g) ?? [])) {
+    if (appearances[picture] && !subjects.includes(`<Subject ${picture.match(/\d+/)[0]}>`)) {
+      retention.push(`${picture}: reference - environment setting and visual tone followed in ${appearances[picture].join(", ")}.`);
+    }
+  }
+  for (const { kind, label } of media) {
+    if (kind === "audio") retention.push(`${label}: reference - voice timbre and audio synchronization maintained.`);
+    else retention.push(`${label} (camera and motion): weak_reference - motion timing and camera work followed${appearances[label] ? ` in ${appearances[label].join(", ")}` : ""}.`);
+  }
+
+  return [
+    `subject_definitions:\n${subjectDefinitions}`,
+    `summary:\n[reference generation] A ${Number(duration).toFixed(1)}-second live-action sequence executing the requested visual narrative across shots using the defined references.`,
+    retention.join("\n"),
+    `detailed_description:\n${body}`,
+    `overall_soundscape:\n${soundscape}`,
+    `non_diegetic_music:\n${score}`,
+  ].join("\n\n");
+}
 
 export const SCENE_CUT_SECONDS = { min: 4, max: 15 };
 
@@ -218,6 +306,7 @@ const STORY_SYSTEM_PROMPT = [
 
 const BASE_PROMPT_SYSTEM_PROMPT = [
   "Rewrite the supplied instruction and story into an English MiniMax H3 video prompt for selected_cut, using its duration_seconds. When story is non-empty, use it as the authoritative source, taking priority over instruction or shared_prompt. Use instruction only when story is empty. Preserve the requested action order, dialogue, sound and music choices; do not invent a different story.",
+  FIDELITY_RULES,
   "{{mode_instructions}}",
   "{{continuity_instructions}}",
   "Images anchor scene boundaries, not every cut: the opening image applies only to cut 1 and the closing image only to last_frame_cut. Use the guide's T2VA format for a cut without an image boundary, I2VA for opening only, L2VA for closing only, and FL2VA when both apply. For closing only, the closing image is Picture 1 in that cut's prompt.",

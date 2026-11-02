@@ -197,7 +197,7 @@ function attachDirector(node) {
     const label = selected === null ? "全カット" : `カット ${selected + 1}`;
     const section = element(parent, "div", "cut-writing section");
     const heading = element(section, "div", "row"); element(heading, "strong", "", `${label}のLLM作成`);
-    hint(heading, "各画像の用途と、作りたい動画をまとめて指定できます。未解析の画像だけ解析し、解析済みの用途・定義は固定して使います。変更は画像の☰から再解析してください。\n\n「ストーリー→Prompt」で未解析画像の解析から一括作成。「Prompt作成」はストーリーがあれば使用し、空欄なら日本語指示から作成します。");
+    hint(heading, "各画像の用途と、作りたい動画をまとめて指定できます。未解析の画像だけ解析し、解析済みの用途・定義は固定して使います。変更は画像の☰から再解析してください。\n\n「ストーリー→Prompt」で未解析画像の解析から一括作成。「Prompt作成」はストーリーがあれば使用し、空欄なら日本語指示から作成します。「Prompt→生成」はストーリー欄を使わず、日本語指示からPromptを作ってそのまま生成します。");
     const instruction = input(section, `${label}の日本語指示`, state.instructions[scope], true);
     instruction.placeholder = "画像1：同じ女性の顔・正面・側面をまとめた外見資料。画像2：左上から順に使うストーリーボード。\n動画：女性が…";
     instruction.rows = 4; instruction.oninput = () => { state.instructions[scope] = instruction.value; changed(); };
@@ -223,15 +223,18 @@ function attachDirector(node) {
     // Whole-scene writing is driven by the instruction, so its buttons sit right under it.
     if (selected === null) storyPanel.before(buttons);
     const actions = [["ストーリー作成", "story"], ["Prompt作成", "prompt"], ["ストーリー→Prompt", "all"]];
-    if (selected === null || plan.shots.length === 1) actions.push(["ストーリー→Prompt→生成", "generate"]);
+    if (selected === null || plan.shots.length === 1) actions.push(["ストーリー→Prompt→生成", "generate"], ["Prompt→生成", "prompt_generate"]);
     for (const [text, action] of actions) {
       button(buttons, text, () => llmTask(async () => {
+        // Prompt→生成 skips the story field and writes from the Japanese instruction.
+        const storyless = action === "prompt_generate";
+        const generating = action === "generate" || storyless;
         if (wholeScene) {
           const seconds = Number(total.value);
           if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("合計生成秒数は正の数を指定してください。");
           if (seconds > SCENE_CUT_SECONDS.max) {
             const sourcePlan = structuredClone(plan), sourceScene = structuredClone(scene);
-            const { cuts, problems } = await llm.createScene(sourceScene, { instruction: state.instructions.all ?? "", story: state.stories.all ?? "" }, action, seconds,
+            const { cuts, problems } = await llm.createScene(sourceScene, { instruction: state.instructions.all ?? "", story: storyless ? "" : state.stories.all ?? "" }, storyless ? "prompt" : action, seconds,
               value => { state.stories.all = value; changed(); });
             collect();
             if (JSON.stringify(scene) !== JSON.stringify(sourceScene) || JSON.stringify(plan) !== JSON.stringify(sourcePlan)) {
@@ -245,7 +248,7 @@ function attachDirector(node) {
             status.textContent = `${cuts.length}カット（${cuts.map(c => c.duration_seconds).join("・")}秒）を作成し、各カットのPrompt欄に反映しました。`;
             // Problems are shown with the result in place, and stop the combined action before video generation.
             if (problems.length) throw new Error("LLMの結果に問題があります（結果は各カットに反映済み）：" + problems.join(" "));
-            if (action === "generate" && !llm.cancelled) await queue.generate(structuredClone({ plan, scene }));
+            if (generating && !llm.cancelled) await queue.generate(structuredClone({ plan, scene }));
             return;
           }
           if (plan.shots.length !== 1 || plan.shots[0].duration_seconds !== seconds) {
@@ -255,14 +258,14 @@ function attachDirector(node) {
         }
         const baseline = structuredClone(plan), sourceScene = structuredClone(scene);
         const prompts = await llm.create(baseline, sourceScene, selected, {
-          instruction: state.instructions[scope] ?? "", story: state.stories[scope] ?? "",
-          includePrevious: selected === null || selected > 0 && (state.previous[scope] ?? true), sceneStory: state.stories.all ?? "",
-        }, action === "generate" ? "all" : action, value => { state.stories[scope] = value; changed(); });
+          instruction: state.instructions[scope] ?? "", story: storyless ? "" : state.stories[scope] ?? "",
+          includePrevious: selected === null || selected > 0 && (state.previous[scope] ?? true), sceneStory: storyless ? "" : state.stories.all ?? "",
+        }, storyless ? "prompt" : action === "generate" ? "all" : action, value => { state.stories[scope] = value; changed(); });
         if (prompts) {
           collect();
           if (JSON.stringify(scene) !== JSON.stringify(sourceScene)) throw new Error("処理中に素材・モードが変わりました。Promptを再作成してください。");
           plan = applyDraft(plan, baseline, prompts); render(); save();
-          if (action === "generate") {
+          if (generating) {
             if (llm.cancelled) return;
             await queue.generate(structuredClone({ plan, scene }));
             return;
