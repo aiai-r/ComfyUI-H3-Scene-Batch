@@ -46,7 +46,7 @@ const R2V_FORMAT_RULES = [
   "non_diegetic_music:",
   "...",
   "",
-  "- Write visual, action and sound descriptions in English. Copy dialogue verbatim in its original language inside <d>[Language] ...</d>.",
+  "- Write visual, action and sound descriptions in English. Copy dialogue verbatim in its original language inside <d>[Language] ...</d>. When the user specifies a vocalization in Japanese quotation marks 「」, preserve the exact quoted text and punctuation inside <d>[Language] ...</d>, even for nonverbal vocalizations; do not replace it with an English sound description.",
   "- [Shot 1] has no timestamp. A later shot starts with [Shot N] At MM:SS.mmm, and every time stays within the selected cut's duration.",
   "- At a subject's first appearance, identify it with its <Subject N> label and the visible features from its saved definition so the shot is unambiguous.",
   "- Give each vocal source a stable speaker ID (S1), (S2) in order of first speech. A speaking subject is written <Subject N> (Sx); an off-screen speaker without a subject is a short voice description followed by (Sx). When the user maps a voice to <Audio N>, cite <Audio N> where that speaker talks.",
