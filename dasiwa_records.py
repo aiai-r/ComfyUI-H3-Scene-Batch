@@ -9,20 +9,34 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
-# Every generation queued with H3 DaSiWa Prompt (one JSON list per node), and
-# batch folders exported from it: batch.json plus the media it needs.
+# One folder per record name: records.json, previews/ (a copy of each generated
+# video) and batches/ (exported batch folders: batch.json plus the media it needs).
 _LOCK = threading.Lock()
 
 
-def _path(name):
+def _record_dir(name):
     name = str(name or "").strip()
     if not name:
         raise ValueError("記録名を入力してください。")
     if len(name) > 100 or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name.endswith(".") or name in (".", ".."):
         raise ValueError("記録名に使えない文字があります。")
-    root = Path(folder_paths.get_output_directory()) / "h3_dasiwa_records"
-    root.mkdir(parents=True, exist_ok=True)
-    return root / f"{name}.json"
+    return Path(folder_paths.get_output_directory()) / "h3_dasiwa_records" / name
+
+
+def _path(name):
+    return _record_dir(name) / "records.json"
+
+
+def _copy_preview(name, record_id, video):
+    root = Path(folder_paths.get_directory_by_type(video.get("type") or "output")).resolve()
+    source = (root / (video.get("subfolder") or "") / video["filename"]).resolve()
+    if not source.is_relative_to(root) or not source.is_file():
+        raise ValueError(f"生成した動画が見つかりません：{video['filename']}")
+    relative = f"previews/{record_id}{source.suffix.lower()}"
+    destination = _record_dir(name) / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return relative
 
 
 def _read(path):
@@ -36,7 +50,7 @@ def _write(path, value):
     temp.replace(path)
 
 
-def _batch_folder(value):
+def _batch_folder(value, name):
     value = str(value or "").strip()
     if not value:
         raise ValueError("バッチ用フォルダの名前か絶対パスを入力してください。")
@@ -44,7 +58,9 @@ def _batch_folder(value):
         return Path(value)
     if re.search(r'[<>:"/\\|?*\x00-\x1f]', value) or value in (".", ".."):
         raise ValueError("フォルダ名に使えない文字があります。")
-    return Path(folder_paths.get_output_directory()) / "h3_dasiwa_batches" / value
+    if not str(name or "").strip():
+        raise ValueError("フォルダ名だけで指定するときは記録名を入力してください。絶対パスなら記録名は不要です。")
+    return _record_dir(name) / "batches" / value
 
 
 def _digest(path):
@@ -103,7 +119,7 @@ def export_batch(records, ids, folder):
             continuity["source_video"] = {"filename": _copy_asset(filename, folder)}
             continuity["source_video_id"] = ""
         record["director"]["timeline_data"] = json.dumps(timeline, ensure_ascii=False)
-        for key in ("clip_id", "video"):
+        for key in ("clip_id", "video", "preview", "excluded"):
             record.pop(key, None)
         record["number"] = number[record["id"]]
         result.append(record)
@@ -145,21 +161,24 @@ def load_batch(folder):
 def records_action(data):
     action = data.get("action")
     if action == "load_batch":
-        return load_batch(_batch_folder(data.get("folder")))
+        return load_batch(_batch_folder(data.get("folder"), data.get("list")))
     path = _path(data.get("list"))
     with _LOCK:
         records = _read(path)
         if action == "list":
             return records
         if action == "export":
-            return export_batch(records, set(data.get("ids") or []), _batch_folder(data.get("folder")))
+            return export_batch(records, set(data.get("ids") or []), _batch_folder(data.get("folder"), data.get("list")))
         if action == "add":
             records.append(data["record"])
         elif action == "update":
             record = next((r for r in records if r.get("id") == data.get("id")), None)
             if record is None:
                 raise ValueError("記録が見つかりません。")
-            record.update(data["patch"])
+            patch = dict(data["patch"])
+            if "video" in patch:
+                patch["preview"] = _copy_preview(data["list"], record["id"], patch.pop("video"))
+            record.update(patch)
         else:
             raise ValueError("不明な操作です。")
         _write(path, records)
@@ -172,3 +191,15 @@ async def records_route(request):
         return web.json_response(records_action(await request.json()))
     except (ValueError, KeyError, TypeError, OSError) as error:
         return web.json_response({"error": str(error)}, status=400)
+
+
+@PromptServer.instance.routes.get("/h3_dasiwa/preview")
+async def preview_route(request):
+    try:
+        root = _record_dir(request.query.get("list")).resolve()
+        path = (root / request.query.get("file", "")).resolve()
+        if not path.is_relative_to(root / "previews") or not path.is_file():
+            raise ValueError("プレビュー動画が見つかりません。")
+        return web.FileResponse(path)
+    except (ValueError, OSError) as error:
+        return web.json_response({"error": str(error)}, status=404)

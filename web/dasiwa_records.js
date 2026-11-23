@@ -119,12 +119,12 @@ async function waitDone(promptId) {
 }
 
 let batchBusy = false;
-export async function runBatchFolder(folder, notify) {
+export async function runBatchFolder(folder, notify, list = "") {
   if (batchBusy) throw new Error("バッチ生成中です。");
   batchBusy = true;
   try {
     notify("バッチ用フォルダを読み込み中…");
-    const records = await request({ action: "load_batch", folder });
+    const records = await request({ action: "load_batch", folder, list });
     const resolve = await loraResolver();
     const session = `h3_${randomHex(16)}`;
     const made = [];
@@ -233,9 +233,11 @@ ${names} も一緒に除外しますか？（キャンセルで取りやめ）`)
         };
         row.append(check);
       }
-      if (record.video) {
+      if (record.preview || record.video) {
         const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.style.cssText = "width:280px;max-height:200px";
-        video.src = api.apiURL(`/view?${new URLSearchParams({ filename: record.video.filename, subfolder: record.video.subfolder ?? "", type: record.video.type ?? "output" })}`);
+        video.src = record.preview
+          ? api.apiURL(`/h3_dasiwa/preview?${new URLSearchParams({ list, file: record.preview })}`)
+          : api.apiURL(`/view?${new URLSearchParams({ filename: record.video.filename, subfolder: record.video.subfolder ?? "", type: record.video.type ?? "output" })}`);
         row.append(video);
       }
       const info = document.createElement("div"); info.style.cssText = "flex:1;min-width:0";

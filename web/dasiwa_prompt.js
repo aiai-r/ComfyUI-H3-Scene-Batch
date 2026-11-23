@@ -95,6 +95,7 @@ function patchQueue() {
       data = await app.graphToPrompt();
     }
     const queued = await original.apply(this, [number, data, ...rest]);
+    if (widget(helper, "record")?.value === false) return queued;
     try { await recordQueued(helper, data, queued); }
     catch (error) { notify(`生成は開始しましたが、記録していません：${error.message}`, true); }
     return queued;
@@ -112,11 +113,13 @@ function attach(node) {
   if (folder) folder.label = "バッチ用フォルダ";
   const recordName = widget(node, "record_name");
   if (recordName) recordName.label = "記録名";
+  const record = widget(node, "record");
+  if (record) record.label = "生成を記録する";
   node.addWidget("button", "Prompt作成のみ", null, () => createPrompt(node, (text, failed) => node.h3Status(text, failed))
     .catch(error => node.h3Status(error.message, true))).serialize = false;
   node.addWidget("button", "LLM設定", null, () => { try { openLLMSettings(node); } catch (error) { node.h3Status(error.message, true); } }).serialize = false;
   node.addWidget("button", "記録一覧・書き出し", null, () => openRecords(node).catch(error => node.h3Status(error.message, true))).serialize = false;
-  node.addWidget("button", "このフォルダを一括実行", null, () => runBatchFolder(folder?.value ?? "", (text, failed) => node.h3Status(text, failed))
+  node.addWidget("button", "このフォルダを一括実行", null, () => runBatchFolder(folder?.value ?? "", (text, failed) => node.h3Status(text, failed), String(recordName?.value ?? "").trim())
     .catch(error => node.h3Status(error.message, true))).serialize = false;
   node.addDOMWidget("h3_status", "custom", status, { serialize: false, hideOnZoom: false, getMinHeight: () => 40 });
   node.h3Status = (text, failed) => { status.textContent = text; status.style.color = failed ? "#f66" : "var(--descrip-text,#999)"; };
