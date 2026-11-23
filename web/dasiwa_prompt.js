@@ -53,8 +53,16 @@ async function writePrompt(helper, notify) {
     const drafts = await llm.create(plan, scene, null, { instruction, story: "", includePrevious: true, sceneStory: "" }, "prompt", () => {});
     const prompt = drafts?.[0]?.prompt;
     if (!prompt?.trim()) throw new Error("LLMのPromptが空です。");
-    const applied = forge.apply({ mode: forge.mode(), continuity: false, fields: forge.mode() === "REF2VA" ? { ref: {} } : {}, simple_prompt: prompt });
-    if (!applied) throw new Error("DirectorにPromptを書き込めませんでした（続きの生成中は使えません）。");
+    const continuing = Boolean(forge.continuity());
+    const applied = forge.apply({ mode: forge.mode(), continuity: continuing, fields: forge.mode() === "REF2VA" ? { ref: {} } : {}, simple_prompt: prompt });
+    if (!applied) throw new Error("DirectorにPromptを書き込めませんでした。");
+    // Like a typed edit, keep the normal and the continuation prompt the same.
+    const state = directors[0].__dasiwaH3State?.();
+    if (state) {
+      if (continuing) Object.assign(state.builder_state, { simple_prompt: prompt, prompt_mode: "simple" });
+      else (state.continuity ??= {}).continuation_prompt = prompt;
+      forge.setUseReferences(Boolean(state.continuity?.use_references));
+    }
     return drafts.missing ?? [];
   } finally { helper.h3Llm = null; }
 }
