@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { DirectorLLM } from "./director_dialog.js";
+import { DirectorLLM, openLLMSettings } from "./director_dialog.js";
 import { recordQueued, openRecords, runBatchFolder } from "./dasiwa_records.js";
 
 // Writes Scene Director's LLM prompt into DaSiWa's MiniMaxH3 Director right before queueing.
@@ -60,6 +60,17 @@ async function writePrompt(helper, notify) {
 }
 
 let busy = false;
+// Writes the LLM prompt into the Director; returns the requested lines missing from it.
+async function createPrompt(helper, notify) {
+  if (busy) throw new Error("LLMでPrompt作成中です。終わるまでお待ちください。");
+  busy = true;
+  try {
+    const missing = await writePrompt(helper, notify);
+    notify(missing.length ? "Promptを書き込みました。指示のセリフがPromptに入っていません：" + missing.map(line => `「${line}」`).join(" ") : "Promptを書き込みました。", missing.length > 0);
+    return missing;
+  } finally { busy = false; }
+}
+
 function patchQueue() {
   if (api.__h3DaSiWaPromptPatched) return;
   const original = api.queuePrompt;
@@ -70,15 +81,8 @@ function patchQueue() {
     const notify = (text, failed = false) => helper.h3Status?.(text, failed);
     if (helpers.length > 1) { notify("H3 DaSiWa Promptは1つだけにしてください。", true); throw new Error("H3 DaSiWa Promptは1つだけにしてください。"); }
     if (widget(helper, "enabled")?.value) {
-      try {
-        if (busy) throw new Error("LLMでPrompt作成中です。終わるまでお待ちください。");
-        busy = true;
-        const missing = await writePrompt(helper, notify);
-        notify(missing.length ? "Promptを書き込みました。指示のセリフがPromptに入っていません：" + missing.map(line => `「${line}」`).join(" ") : "Promptを書き込み、生成をキューに入れました。", missing.length > 0);
-      } catch (error) {
-        notify(error.message, true);
-        throw error;
-      } finally { busy = false; }
+      try { await createPrompt(helper, notify); }
+      catch (error) { notify(error.message, true); throw error; }
       // Rebuild so the queued body carries the prompt just written into the Director.
       data = await app.graphToPrompt();
     }
@@ -92,7 +96,7 @@ function patchQueue() {
 
 function attach(node) {
   const enabled = widget(node, "enabled"), instruction = widget(node, "instruction");
-  if (enabled) enabled.label = "実行時にLLMでPrompt作成";
+  if (enabled) enabled.label = "実行時にPrompt作成→生成";
   if (instruction) { instruction.label = "日本語指示"; if (instruction.inputEl) instruction.inputEl.placeholder = "例：画像1の女性が手を振り、音声1の声で「こんにちは」と話す。BGMなし。"; }
   const status = document.createElement("p");
   status.style.cssText = "margin:4px;font-size:12px;white-space:pre-wrap;color:var(--descrip-text,#999)";
@@ -100,6 +104,9 @@ function attach(node) {
   if (folder) folder.label = "バッチ用フォルダ";
   const recordName = widget(node, "record_name");
   if (recordName) recordName.label = "記録名";
+  node.addWidget("button", "Prompt作成のみ", null, () => createPrompt(node, (text, failed) => node.h3Status(text, failed))
+    .catch(error => node.h3Status(error.message, true))).serialize = false;
+  node.addWidget("button", "LLM設定", null, () => { try { openLLMSettings(node); } catch (error) { node.h3Status(error.message, true); } }).serialize = false;
   node.addWidget("button", "記録一覧・書き出し", null, () => openRecords(node).catch(error => node.h3Status(error.message, true))).serialize = false;
   node.addWidget("button", "このフォルダを一括実行", null, () => runBatchFolder(folder?.value ?? "", (text, failed) => node.h3Status(text, failed))
     .catch(error => node.h3Status(error.message, true))).serialize = false;
