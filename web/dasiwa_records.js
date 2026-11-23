@@ -257,10 +257,14 @@ ${names} も一緒に除外しますか？（キャンセルで取りやめ）`)
   excludedTab.onclick = () => { tab = "excluded"; render(); };
   const exportArea = document.createElement("div"); exportArea.style.cssText = "display:flex;gap:8px;margin-top:12px;align-items:center";
   const folder = document.createElement("input"); folder.placeholder = "書き出し先（フォルダ名または絶対パス）"; folder.style.cssText = "flex:1";
+  // Default: the record name and the current time, so each export gets a new folder.
+  const defaultFolder = () => { const t = new Date(), p = n => String(n).padStart(2, "0"); return `${list}_${t.getFullYear()}${p(t.getMonth() + 1)}${p(t.getDate())}_${p(t.getHours())}${p(t.getMinutes())}${p(t.getSeconds())}`; };
+  folder.value = defaultFolder();
   const exportIds = async ids => {
     try {
       const result = await request({ action: "export", list, ids, folder: folder.value });
       notify(`${result.count}件を書き出しました：${result.folder}`);
+      folder.value = defaultFolder();
     } catch (error) { notify(error.message, true); }
   };
   const exportChecked = document.createElement("button"); exportChecked.textContent = "チェックした回を書き出す";
