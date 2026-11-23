@@ -27,12 +27,13 @@ def _path(name):
     return _record_dir(name) / "records.json"
 
 
-def _copy_preview(name, record_id, video):
+def _copy_preview(name, number, video):
     root = Path(folder_paths.get_directory_by_type(video.get("type") or "output")).resolve()
     source = (root / (video.get("subfolder") or "") / video["filename"]).resolve()
     if not source.is_relative_to(root) or not source.is_file():
         raise ValueError(f"生成した動画が見つかりません：{video['filename']}")
-    relative = f"previews/{record_id}{source.suffix.lower()}"
+    # Same number as the list (#n), so the files sort in the order they were made.
+    relative = f"previews/{name}_{number:04d}{source.suffix.lower()}"
     destination = _record_dir(name) / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
@@ -177,7 +178,7 @@ def records_action(data):
                 raise ValueError("記録が見つかりません。")
             patch = dict(data["patch"])
             if "video" in patch:
-                patch["preview"] = _copy_preview(data["list"], record["id"], patch.pop("video"))
+                patch["preview"] = _copy_preview(data["list"], records.index(record) + 1, patch.pop("video"))
             record.update(patch)
         else:
             raise ValueError("不明な操作です。")
