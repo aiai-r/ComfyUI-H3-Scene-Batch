@@ -47,6 +47,8 @@ const R2V_FORMAT_RULES = [
   "...",
   "",
   "- Write visual, action and sound descriptions in English. Copy dialogue verbatim in its original language inside <d>[Language] ...</d>. When the user specifies a vocalization in Japanese quotation marks 「」, preserve the exact quoted text and punctuation inside <d>[Language] ...</d>, even for nonverbal vocalizations; do not replace it with an English sound description.",
+  "- Text in 「」 is what the subject actually voices in the target video; <Audio N> supplies only the voice timbre. Even when a quoted line is tied to <Audio N> (for example 音声1で「…」), always write the quoted text itself inside <d>[Language] ...</d>. Never replace it with a reference to the audio, such as \"a voice as heard in <Audio 1>\".",
+  "- When the same quoted line appears several times in the instruction, write it that many times, each at its own point in the requested order. Do not merge repetitions into one line.",
   "- [Shot 1] has no timestamp. A later shot starts with [Shot N] At MM:SS.mmm, and every time stays within the selected cut's duration.",
   "- At a subject's first appearance, identify it with its <Subject N> label and the visible features from its saved definition so the shot is unambiguous.",
   "- Give each vocal source a stable speaker ID (S1), (S2) in order of first speech. A speaking subject is written <Subject N> (Sx); an off-screen speaker without a subject is a short voice description followed by (Sx). When the user maps a voice to <Audio N>, cite <Audio N> where that speaker talks.",
