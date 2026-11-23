@@ -177,9 +177,39 @@ export async function openRecords(helper) {
   const status = document.createElement("p"); status.style.cssText = "white-space:pre-wrap";
   const notify = (text, failed = false) => { status.textContent = text; status.style.color = failed ? "#f66" : ""; };
   const checked = new Set();
+  const number = record => `#${records.indexOf(record) + 1}`;
+  // The records this one continues from, nearest first.
+  const ancestors = record => {
+    const chain = [];
+    for (let current = record; current.source.kind === "clip";) {
+      current = records.find(r => r.clip_id && r.clip_id === current.source.clip_id);
+      if (!current || chain.includes(current)) break;
+      chain.push(current);
+    }
+    return chain;
+  };
+  // The records continued from this one, directly or further down the chain.
+  const dependents = record => records.filter(r => ancestors(r).includes(record));
   const setExcluded = async (record, excluded) => {
-    try { records = await request({ action: "update", list, id: record.id, patch: { excluded } }); checked.delete(record.id); render(); }
-    catch (error) { notify(error.message, true); }
+    try {
+      let targets = [record];
+      if (excluded) {
+        const kept = dependents(record).filter(r => !r.excluded);
+        if (kept.length) {
+          const names = kept.map(number).join("・");
+          if (!confirm(`${names} は ${number(record)} の続きです。${number(record)} を除外すると ${names} も書き出せなくなります。
+${names} も一緒に除外しますか？（キャンセルで取りやめ）`)) return;
+          targets = [record, ...kept];
+        }
+      } else {
+        targets = [record, ...ancestors(record).filter(r => r.excluded)];
+      }
+      for (const target of targets) {
+        records = await request({ action: "update", list, id: target.id, patch: { excluded } });
+        checked.delete(target.id);
+      }
+      render();
+    } catch (error) { notify(error.message, true); }
   };
   function render() {
     const excludedCount = records.filter(r => r.excluded).length;
@@ -195,7 +225,12 @@ export async function openRecords(helper) {
       row.style.cssText = "display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #444";
       if (tab === "active") {
         const check = document.createElement("input"); check.type = "checkbox"; check.checked = checked.has(record.id);
-        check.onchange = () => { if (check.checked) checked.add(record.id); else checked.delete(record.id); };
+        check.onchange = () => {
+          if (!check.checked) { checked.delete(record.id); return; }
+          // A continuation needs the records it continues from.
+          for (const r of [record, ...ancestors(record)]) checked.add(r.id);
+          render();
+        };
         row.append(check);
       }
       if (record.video) {
