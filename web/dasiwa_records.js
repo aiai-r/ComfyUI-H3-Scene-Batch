@@ -121,6 +121,7 @@ async function waitDone(promptId) {
 let batchBusy = false;
 export async function runBatchFolder(folder, notify, list = "") {
   if (batchBusy) throw new Error("バッチ生成中です。");
+  if (!list) throw new Error("記録名を入力してください。バッチの動画の保存名に使います。");
   batchBusy = true;
   try {
     notify("バッチ用フォルダを読み込み中…");
@@ -149,6 +150,9 @@ export async function runBatchFolder(folder, notify, list = "") {
       Object.assign(director.inputs, record.director, { timeline_data: JSON.stringify(timeline) });
       for (const [id, seed] of Object.entries(record.seeds)) if (output[id]?.class_type === "DaSiWa_SeedControl") output[id].inputs.seed_value = seed;
       applyLoras(output, record.loras, resolve);
+      // Batch videos go to the record folder, named in the order they are made.
+      const prefix = `h3_dasiwa_records/${list}/batch_outputs/${list}_batch_${String(index + 1).padStart(4, "0")}`;
+      for (const node of Object.values(output)) if (node.class_type === "DaSiWa_EnhancedVideoCombine") node.inputs.filename_prefix = prefix;
       savedBySession.delete(session);
       const response = await api.fetchApi("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: output, client_id: api.clientId, extra_data: { extra_pnginfo: { workflow: template.workflow } } }) });
