@@ -32,6 +32,10 @@ NODE_CLASS_MAPPINGS['H3I2VScene'] = H3I2VScene
 NODE_DISPLAY_NAME_MAPPINGS['H3I2VScene'] = 'H3 I2V Scene (LLM)'
 NODE_CLASS_MAPPINGS['H3VideoPreview'] = H3VideoPreview
 NODE_DISPLAY_NAME_MAPPINGS['H3VideoPreview'] = 'H3 Video Preview'
+from .dasiwa_prompt import H3DaSiWaPrompt
+from . import dasiwa_records
+NODE_CLASS_MAPPINGS['H3DaSiWaPrompt'] = H3DaSiWaPrompt
+NODE_DISPLAY_NAME_MAPPINGS['H3DaSiWaPrompt'] = 'H3 DaSiWa Prompt (LLM)'
 
 WEB_DIRECTORY = "./web"
 
