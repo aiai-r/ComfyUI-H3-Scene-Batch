@@ -127,9 +127,14 @@ export async function runBatchFolder(folder, notify, list = "") {
     notify("バッチ用フォルダを読み込み中…");
     const records = await request({ action: "load_batch", folder, list });
     const resolve = await loraResolver();
-    const session = `h3_${randomHex(16)}`;
-    const made = [];
+    // Resume after the clips a stopped run already made, continuing from their saved data.
+    const progress = await request({ action: "progress", folder, list });
+    const session = progress?.session ?? `h3_${randomHex(16)}`;
+    const made = progress?.made ?? [];
+    if (made.length >= records.length) { notify(`このバッチは${records.length}本すべて生成済みです。`); return; }
+    if (made.length) notify(`${made.length}本目まで生成済みです。${made.length + 1}本目から再開します。`);
     for (const [index, record] of records.entries()) {
+      if (index < made.length) continue;
       notify(`バッチ ${index + 1}/${records.length}（記録 #${record.number}）を生成中…`);
       const template = await app.graphToPrompt();
       const output = structuredClone(template.output);
@@ -162,6 +167,7 @@ export async function runBatchFolder(folder, notify, list = "") {
       const saved = savedBySession.get(session);
       if (!saved) throw new Error(`記録 #${record.number} の保存データが作られませんでした。`);
       made.push(saved);
+      await request({ action: "save_progress", folder, list, progress: { session, made } });
     }
     notify(`バッチ完了：${records.length}本を生成しました。`);
   } finally { batchBusy = false; }

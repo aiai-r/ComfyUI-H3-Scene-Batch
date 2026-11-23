@@ -163,6 +163,17 @@ def records_action(data):
     action = data.get("action")
     if action == "load_batch":
         return load_batch(_batch_folder(data.get("folder"), data.get("list")))
+    # Progress of a batch run, kept next to batch.json so a stopped run can resume.
+    if action == "progress":
+        path = _batch_folder(data.get("folder"), data.get("list")) / "progress.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    if action == "save_progress":
+        folder = _batch_folder(data.get("folder"), data.get("list"))
+        if not (folder / "batch.json").is_file():
+            raise ValueError(f"batch.jsonがありません：{folder}")
+        progress = data["progress"]
+        _write(folder / "progress.json", {"session": str(progress["session"]), "made": [str(c) for c in progress["made"]]})
+        return True
     path = _path(data.get("list"))
     with _LOCK:
         records = _read(path)
