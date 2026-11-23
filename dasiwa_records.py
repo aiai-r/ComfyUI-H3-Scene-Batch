@@ -12,15 +12,17 @@ from server import PromptServer
 # Every generation queued with H3 DaSiWa Prompt (one JSON list per node), and
 # batch folders exported from it: batch.json plus the media it needs.
 _LOCK = threading.Lock()
-_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
-def _path(list_id):
-    if not isinstance(list_id, str) or not _ID.fullmatch(list_id):
-        raise ValueError("記録IDが不正です。")
+def _path(name):
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("記録名を入力してください。")
+    if len(name) > 100 or re.search(r'[<>:"/\\|?*\x00-\x1f]', name) or name.endswith(".") or name in (".", ".."):
+        raise ValueError("記録名に使えない文字があります。")
     root = Path(folder_paths.get_output_directory()) / "h3_dasiwa_records"
     root.mkdir(parents=True, exist_ok=True)
-    return root / f"{list_id}.json"
+    return root / f"{name}.json"
 
 
 def _read(path):

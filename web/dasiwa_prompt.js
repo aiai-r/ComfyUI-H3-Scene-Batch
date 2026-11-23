@@ -84,7 +84,7 @@ function patchQueue() {
     }
     const queued = await original.apply(this, [number, data, ...rest]);
     try { await recordQueued(helper, data, queued); }
-    catch (error) { notify(`生成は開始しましたが、記録に失敗しました：${error.message}`, true); }
+    catch (error) { notify(`生成は開始しましたが、記録していません：${error.message}`, true); }
     return queued;
   };
   api.__h3DaSiWaPromptPatched = true;
@@ -98,6 +98,8 @@ function attach(node) {
   status.style.cssText = "margin:4px;font-size:12px;white-space:pre-wrap;color:var(--descrip-text,#999)";
   const folder = widget(node, "batch_folder");
   if (folder) folder.label = "バッチ用フォルダ";
+  const recordName = widget(node, "record_name");
+  if (recordName) recordName.label = "記録名";
   node.addWidget("button", "記録一覧・書き出し", null, () => openRecords(node).catch(error => node.h3Status(error.message, true))).serialize = false;
   node.addWidget("button", "このフォルダを一括実行", null, () => runBatchFolder(folder?.value ?? "", (text, failed) => node.h3Status(text, failed))
     .catch(error => node.h3Status(error.message, true))).serialize = false;

@@ -15,8 +15,9 @@ async function request(body) {
 }
 
 function listId(helper) {
-  if (!helper.properties.h3_record_list) { helper.properties.h3_record_list = `rec_${randomHex(8)}`; helper.graph?.change(); }
-  return helper.properties.h3_record_list;
+  const name = String(helper.widgets?.find(w => w.name === "record_name")?.value ?? "").trim();
+  if (!name) throw new Error("記録名が空です。");
+  return name;
 }
 
 function directorEntry(output) {
@@ -54,11 +55,11 @@ for (const name of ["execution_success", "execution_error", "execution_interrupt
 
 export async function recordQueued(helper, data, queued) {
   if (!queued?.prompt_id) return;
+  const list = listId(helper);
   const [, director] = directorEntry(data.output);
   const picked = Object.fromEntries(DIRECTOR_KEYS.filter(k => k in director.inputs && !Array.isArray(director.inputs[k])).map(k => [k, director.inputs[k]]));
   const seeds = Object.fromEntries(Object.entries(data.output).filter(([, n]) => n.class_type === "DaSiWa_SeedControl" && typeof n.inputs.seed_value === "number").map(([id, n]) => [id, n.inputs.seed_value]));
   const loras = Object.fromEntries(Object.entries(data.output).filter(([, n]) => /lora/i.test(n.class_type)).map(([id, n]) => [id, { class_type: n.class_type, inputs: plainInputs(n.inputs) }]));
-  const list = listId(helper);
   pending.set(queued.prompt_id, list);
   await request({ action: "add", list, record: { id: queued.prompt_id, created: Date.now(), director: picked, seeds, loras, source: sourceOf(picked.timeline_data) } });
 }
@@ -163,10 +164,11 @@ export async function runBatchFolder(folder, notify) {
 }
 
 export async function openRecords(helper) {
-  const records = helper.properties.h3_record_list ? await request({ action: "list", list: helper.properties.h3_record_list }) : [];
+  const list = listId(helper);
+  const records = await request({ action: "list", list });
   const dialog = document.createElement("dialog");
   dialog.style.cssText = "width:min(1100px,94vw);max-height:88vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:16px";
-  const title = document.createElement("h3"); title.textContent = "生成の記録"; dialog.append(title);
+  const title = document.createElement("h3"); title.textContent = `生成の記録：${list}`; dialog.append(title);
   const status = document.createElement("p"); status.style.cssText = "white-space:pre-wrap";
   const notify = (text, failed = false) => { status.textContent = text; status.style.color = failed ? "#f66" : ""; };
   const checks = [];
@@ -200,7 +202,7 @@ export async function openRecords(helper) {
   exportButton.onclick = async () => {
     try {
       const ids = records.filter((_, index) => checks[index].checked).map(r => r.id);
-      const result = await request({ action: "export", list: helper.properties.h3_record_list, ids, folder: folder.value });
+      const result = await request({ action: "export", list, ids, folder: folder.value });
       notify(`${result.count}件を書き出しました：${result.folder}`);
     } catch (error) { notify(error.message, true); }
   };

@@ -11,11 +11,12 @@ class H3DaSiWaPrompt:
             "enabled": ("BOOLEAN", {"default": True, "tooltip": "ONなら実行時にLLMでPromptを作り、DirectorのPrompt欄に書き込んでから生成します。"}),
             "instruction": ("STRING", {"default": "", "multiline": True, "tooltip": "作りたい動画の日本語指示。画像1・音声1はDirectorに入れた順の番号です。"}),
             "batch_folder": ("STRING", {"default": "", "tooltip": "一括実行するバッチ用フォルダの名前、または絶対パス。"}),
+            "record_name": ("STRING", {"default": "", "tooltip": "生成の記録を保存する一覧の名前。作品ごとに変えると記録が分かれます。"}),
         }}
 
     RETURN_TYPES = ()
     FUNCTION = "noop"
     CATEGORY = "H3 Scene Batch"
 
-    def noop(self, enabled, instruction, batch_folder=""):
+    def noop(self, enabled, instruction, batch_folder="", record_name=""):
         return ()
