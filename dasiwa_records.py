@@ -89,7 +89,7 @@ def export_batch(records, ids, folder):
             if origin is None:
                 previous = next((r for r in records if r.get("clip_id") == source["clip_id"]), None)
                 raise ValueError(f"#{number[record['id']]} の続きの元が記録にありません。" if previous is None
-                                 else f"#{number[record['id']]} の続きの元 #{number[previous['id']]} もチェックしてください。")
+                                 else f"#{number[record['id']]} の続きの元 #{number[previous['id']]} も書き出し対象に含めてください。")
             record["source"] = {"kind": "clip", "from": origin}
         timeline = json.loads(record["director"].get("timeline_data") or "{}")
         for item in timeline.get("items", []):

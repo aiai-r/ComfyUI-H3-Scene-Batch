@@ -165,48 +165,77 @@ export async function runBatchFolder(folder, notify) {
 
 export async function openRecords(helper) {
   const list = listId(helper);
-  const records = await request({ action: "list", list });
+  let records = await request({ action: "list", list });
+  let tab = "active";
   const dialog = document.createElement("dialog");
   dialog.style.cssText = "width:min(1100px,94vw);max-height:88vh;overflow:auto;background:var(--comfy-menu-bg,#222);color:var(--fg-color,#ddd);padding:16px";
-  const title = document.createElement("h3"); title.textContent = `生成の記録：${list}`; dialog.append(title);
+  const title = document.createElement("h3"); title.textContent = `生成の記録：${list}`;
+  const tabs = document.createElement("div"); tabs.style.cssText = "display:flex;gap:8px;margin-bottom:8px";
+  const activeTab = document.createElement("button"), excludedTab = document.createElement("button");
+  tabs.append(activeTab, excludedTab);
+  const rows = document.createElement("div");
   const status = document.createElement("p"); status.style.cssText = "white-space:pre-wrap";
   const notify = (text, failed = false) => { status.textContent = text; status.style.color = failed ? "#f66" : ""; };
-  const checks = [];
-  if (!records.length) dialog.append("記録はまだありません。");
-  records.forEach((record, index) => {
-    const row = document.createElement("div");
-    row.style.cssText = "display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #444";
-    const check = document.createElement("input"); check.type = "checkbox"; checks.push(check);
-    const info = document.createElement("div"); info.style.cssText = "flex:1;min-width:0";
-    const origin = record.source.kind === "clip" ? records.findIndex(r => r.clip_id && r.clip_id === record.source.clip_id) : -1;
-    const source = { new: "新規", video: "読み込んだ動画の続き", clip: origin >= 0 ? `#${origin + 1} の続き` : "記録外の動画の続き" }[record.source.kind];
-    const head = document.createElement("strong");
-    head.textContent = `#${index + 1}　${new Date(record.created).toLocaleString()}　${record.director.mode} ${record.director.duration}秒　${source}`;
-    const text = document.createElement("p"); const prompt = promptText(record);
-    text.textContent = prompt.length > 200 ? prompt.slice(0, 200) + "…" : prompt; text.title = prompt;
-    text.style.cssText = "margin:4px 0;font-size:12px;opacity:.8;white-space:pre-wrap";
-    info.append(head, text);
-    row.append(check);
-    if (record.video) {
-      const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.style.cssText = "width:280px;max-height:200px";
-      video.src = api.apiURL(`/view?${new URLSearchParams({ filename: record.video.filename, subfolder: record.video.subfolder ?? "", type: record.video.type ?? "output" })}`);
-      row.append(video);
+  const checked = new Set();
+  const setExcluded = async (record, excluded) => {
+    try { records = await request({ action: "update", list, id: record.id, patch: { excluded } }); checked.delete(record.id); render(); }
+    catch (error) { notify(error.message, true); }
+  };
+  function render() {
+    const excludedCount = records.filter(r => r.excluded).length;
+    activeTab.textContent = `記録（${records.length - excludedCount}）`; excludedTab.textContent = `除外済み（${excludedCount}）`;
+    activeTab.disabled = tab === "active"; excludedTab.disabled = tab === "excluded";
+    exportArea.hidden = tab !== "active";
+    rows.replaceChildren();
+    const shown = records.filter(r => Boolean(r.excluded) === (tab === "excluded"));
+    if (!shown.length) rows.append(tab === "active" ? "記録はありません。" : "除外した記録はありません。");
+    for (const record of shown) {
+      const index = records.indexOf(record);
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:12px;align-items:flex-start;padding:8px 0;border-bottom:1px solid #444";
+      if (tab === "active") {
+        const check = document.createElement("input"); check.type = "checkbox"; check.checked = checked.has(record.id);
+        check.onchange = () => { if (check.checked) checked.add(record.id); else checked.delete(record.id); };
+        row.append(check);
+      }
+      if (record.video) {
+        const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.style.cssText = "width:280px;max-height:200px";
+        video.src = api.apiURL(`/view?${new URLSearchParams({ filename: record.video.filename, subfolder: record.video.subfolder ?? "", type: record.video.type ?? "output" })}`);
+        row.append(video);
+      }
+      const info = document.createElement("div"); info.style.cssText = "flex:1;min-width:0";
+      const origin = record.source.kind === "clip" ? records.findIndex(r => r.clip_id && r.clip_id === record.source.clip_id) : -1;
+      const source = { new: "新規", video: "読み込んだ動画の続き", clip: origin >= 0 ? `#${origin + 1} の続き` : "記録外の動画の続き" }[record.source.kind];
+      const head = document.createElement("strong");
+      head.textContent = `#${index + 1}　${new Date(record.created).toLocaleString()}　${record.director.mode} ${record.director.duration}秒　${source}`;
+      const text = document.createElement("p"); const prompt = promptText(record);
+      text.textContent = prompt.length > 200 ? prompt.slice(0, 200) + "…" : prompt; text.title = prompt;
+      text.style.cssText = "margin:4px 0;font-size:12px;opacity:.8;white-space:pre-wrap";
+      info.append(head, text);
+      const toggle = document.createElement("button"); toggle.textContent = tab === "active" ? "除外" : "戻す";
+      toggle.onclick = () => setExcluded(record, tab === "active");
+      row.append(info, toggle);
+      rows.append(row);
     }
-    row.append(info);
-    dialog.append(row);
-  });
-  const buttons = document.createElement("div"); buttons.style.cssText = "display:flex;gap:8px;margin-top:12px;align-items:center";
+  }
+  activeTab.onclick = () => { tab = "active"; render(); };
+  excludedTab.onclick = () => { tab = "excluded"; render(); };
+  const exportArea = document.createElement("div"); exportArea.style.cssText = "display:flex;gap:8px;margin-top:12px;align-items:center";
   const folder = document.createElement("input"); folder.placeholder = "書き出し先（フォルダ名または絶対パス）"; folder.style.cssText = "flex:1";
-  const exportButton = document.createElement("button"); exportButton.textContent = "チェックした回をバッチ用フォルダに書き出す";
-  const close = document.createElement("button"); close.textContent = "閉じる";
-  exportButton.onclick = async () => {
+  const exportIds = async ids => {
     try {
-      const ids = records.filter((_, index) => checks[index].checked).map(r => r.id);
       const result = await request({ action: "export", list, ids, folder: folder.value });
       notify(`${result.count}件を書き出しました：${result.folder}`);
     } catch (error) { notify(error.message, true); }
   };
+  const exportChecked = document.createElement("button"); exportChecked.textContent = "チェックした回を書き出す";
+  exportChecked.onclick = () => exportIds(records.filter(r => !r.excluded && checked.has(r.id)).map(r => r.id));
+  const exportAll = document.createElement("button"); exportAll.textContent = "記録の全てを書き出す";
+  exportAll.onclick = () => exportIds(records.filter(r => !r.excluded).map(r => r.id));
+  exportArea.append(folder, exportChecked, exportAll);
+  const close = document.createElement("button"); close.textContent = "閉じる"; close.style.marginTop = "8px";
   close.onclick = () => { dialog.close(); dialog.remove(); };
-  buttons.append(folder, exportButton, close); dialog.append(buttons, status);
+  dialog.append(title, tabs, rows, exportArea, close, status);
+  render();
   document.body.append(dialog); dialog.showModal();
 }
