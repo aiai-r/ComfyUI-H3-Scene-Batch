@@ -134,13 +134,15 @@ def load_batch(folder):
         raise ValueError(f"batch.jsonがありません：{folder}")
     data = json.loads(path.read_text(encoding="utf-8"))
     target = Path(folder_paths.get_input_directory()) / "h3_dasiwa_batch"
+    missing = []
 
     def place(relative):
         if not isinstance(relative, str) or not re.fullmatch(r"assets/[0-9a-f]{64}\.[A-Za-z0-9]+", relative):
             raise ValueError(f"batch.jsonの素材パスが不正です：{relative}")
         source = folder / relative
         if not source.is_file():
-            raise ValueError(f"素材がフォルダにありません：{relative}")
+            missing.append(relative)
+            return relative
         destination = target / source.name
         if not destination.exists() or destination.stat().st_size != source.stat().st_size:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +158,35 @@ def load_batch(folder):
         if record["source"]["kind"] == "video":
             continuity["source_video"] = {"filename": place(continuity["source_video"]["filename"])}
         record["director"]["timeline_data"] = json.dumps(timeline, ensure_ascii=False)
+    if missing:
+        raise ValueError("素材がバッチ用フォルダにありません：" + "、".join(sorted(set(missing))))
     return data["records"]
+
+
+def _session_dir(session):
+    if not isinstance(session, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", session):
+        raise ValueError("保存データのセッションIDが不正です。")
+    return Path(folder_paths.get_output_directory()) / "df_h3_continuity" / session
+
+
+def _clip_ready(session, clip):
+    if not isinstance(clip, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", clip):
+        return False
+    path = _session_dir(session) / clip / "clip.json"
+    try:
+        return path.is_file() and json.loads(path.read_text(encoding="utf-8")).get("status") == "ready"
+    except (OSError, ValueError):
+        return False
+
+
+def latest_clip(session):
+    """The clip DaSiWa last finished in this session, read from disk (no websocket needed)."""
+    path = _session_dir(session) / "latest.json"
+    try:
+        clip = json.loads(path.read_text(encoding="utf-8")).get("clip_id") if path.is_file() else None
+    except (OSError, ValueError):
+        return None
+    return clip if _clip_ready(session, clip) else None
 
 
 def records_action(data):
@@ -167,6 +197,10 @@ def records_action(data):
     if action == "progress":
         path = _batch_folder(data.get("folder"), data.get("list")) / "progress.json"
         return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    if action == "latest_clip":
+        return latest_clip(data.get("session"))
+    if action == "missing_clips":
+        return [clip for clip in data.get("clips") or [] if not _clip_ready(data.get("session"), clip)]
     if action == "save_progress":
         folder = _batch_folder(data.get("folder"), data.get("list"))
         if not (folder / "batch.json").is_file():

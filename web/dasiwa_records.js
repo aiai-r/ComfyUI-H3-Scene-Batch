@@ -118,6 +118,57 @@ async function waitDone(promptId) {
   }
 }
 
+// One record -> the prompt body to queue, built on the current workflow (steps, resolution, models).
+function buildOutput(template, record, { session, made, list, index, resolve }) {
+  const output = structuredClone(template.output);
+  const [, director] = directorEntry(output);
+  const current = JSON.parse(director.inputs.timeline_data || "{}");
+  const timeline = JSON.parse(record.director.timeline_data || "{}");
+  timeline.resolution = current.resolution;
+  const c = timeline.continuity ??= {};
+  Object.assign(c, { session, capture: true });
+  if (record.source.kind === "new") Object.assign(c, { operation: "new", source_kind: "checkpoint", source_id: "", source_video_id: "", source_video: null });
+  if (record.source.kind === "clip") Object.assign(c, { operation: "continue", source_kind: "checkpoint", source_id: made[record.source.from] ?? "" });
+  Object.assign(director.inputs, record.director, { timeline_data: JSON.stringify(timeline) });
+  for (const [id, seed] of Object.entries(record.seeds)) if (output[id]?.class_type === "DaSiWa_SeedControl") output[id].inputs.seed_value = seed;
+  applyLoras(output, record.loras, resolve);
+  // Batch videos go to the record folder, named in the order they are made.
+  const prefix = `h3_dasiwa_records/${list}/batch_outputs/${list}_batch_${String(index + 1).padStart(4, "0")}`;
+  for (const node of Object.values(output)) if (node.class_type === "DaSiWa_EnhancedVideoCombine") node.inputs.filename_prefix = prefix;
+  return { output, director, timeline };
+}
+
+const MODEL_FILE = /\.(safetensors|sft|ckpt|pt|pth|bin|gguf|onnx)$/i;
+const comboOptions = spec => Array.isArray(spec?.[0]) ? spec[0] : Array.isArray(spec?.[1]?.options) ? spec[1].options : null;
+
+// Everything that would stop the batch partway, found before generating anything.
+async function preflight(template, records, context, progress) {
+  const problems = new Set();
+  const response = await api.fetchApi("/object_info");
+  if (!response.ok) throw new Error("ノード情報を取得できません。");
+  const info = await response.json();
+  const resolve = name => { try { return context.resolve(name); } catch (error) { problems.add(error.message); return name; } };
+  for (const [index, record] of records.entries()) {
+    let built;
+    try { built = buildOutput(template, record, { ...context, index, resolve }); }
+    catch (error) { problems.add(`#${record.number}：${error.message}`); continue; }
+    for (const node of Object.values(built.output)) {
+      const spec = info[node.class_type];
+      if (!spec) { problems.add(`ノードが入っていません：${node.class_type}`); continue; }
+      for (const [key, value] of Object.entries(node.inputs)) {
+        if (typeof value !== "string" || !MODEL_FILE.test(value)) continue;
+        const options = comboOptions(spec.input?.required?.[key] ?? spec.input?.optional?.[key]);
+        if (options && !options.includes(value)) problems.add(`モデルが見つかりません：${value}（${node.class_type}）`);
+      }
+    }
+  }
+  if (progress?.made?.length) {
+    const missing = await request({ action: "missing_clips", session: progress.session, clips: progress.made });
+    if (missing.length) problems.add(`再開に使う、生成済みの回の保存データが見つかりません（${missing.length}件）。`);
+  }
+  if (problems.size) throw new Error(`バッチを始められません。次を直してください：\n・${[...problems].join("\n・")}`);
+}
+
 let batchBusy = false;
 export async function runBatchFolder(folder, notify, list = "") {
   if (batchBusy) throw new Error("バッチ生成中です。");
@@ -132,39 +183,34 @@ export async function runBatchFolder(folder, notify, list = "") {
     const session = progress?.session ?? `h3_${randomHex(16)}`;
     const made = progress?.made ?? [];
     if (made.length >= records.length) { notify(`このバッチは${records.length}本すべて生成済みです。`); return; }
+    notify("バッチを実行できる状態か確認中…");
+    await preflight(await app.graphToPrompt(), records, { session, made, list, resolve }, progress);
     if (made.length) notify(`${made.length}本目まで生成済みです。${made.length + 1}本目から再開します。`);
     for (const [index, record] of records.entries()) {
       if (index < made.length) continue;
       notify(`バッチ ${index + 1}/${records.length}（記録 #${record.number}）を生成中…`);
       const template = await app.graphToPrompt();
-      const output = structuredClone(template.output);
-      const [, director] = directorEntry(output);
-      const current = JSON.parse(director.inputs.timeline_data || "{}");
-      const timeline = JSON.parse(record.director.timeline_data || "{}");
-      timeline.resolution = current.resolution;
-      const c = timeline.continuity ??= {};
-      Object.assign(c, { session, capture: true });
-      if (record.source.kind === "new") Object.assign(c, { operation: "new", source_kind: "checkpoint", source_id: "", source_video_id: "", source_video: null });
-      if (record.source.kind === "clip") Object.assign(c, { operation: "continue", source_kind: "checkpoint", source_id: made[record.source.from] });
+      const { output, director, timeline } = buildOutput(template, record, { session, made, list, index, resolve });
       if (record.source.kind === "video") {
+        const c = timeline.continuity;
         const response = await api.fetchApi("/df_h3_continuity/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename: c.source_video.filename }) });
         const video = await response.json();
         if (!response.ok) throw new Error(`開始動画を登録できません：${video.error ?? ""}`);
         Object.assign(c, { operation: "continue", source_kind: "video", source_video_id: video.clip_id, source_video: video, source_id: "" });
+        director.inputs.timeline_data = JSON.stringify(timeline);
       }
-      Object.assign(director.inputs, record.director, { timeline_data: JSON.stringify(timeline) });
-      for (const [id, seed] of Object.entries(record.seeds)) if (output[id]?.class_type === "DaSiWa_SeedControl") output[id].inputs.seed_value = seed;
-      applyLoras(output, record.loras, resolve);
-      // Batch videos go to the record folder, named in the order they are made.
-      const prefix = `h3_dasiwa_records/${list}/batch_outputs/${list}_batch_${String(index + 1).padStart(4, "0")}`;
-      for (const node of Object.values(output)) if (node.class_type === "DaSiWa_EnhancedVideoCombine") node.inputs.filename_prefix = prefix;
       savedBySession.delete(session);
       const response = await api.fetchApi("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: output, client_id: api.clientId, extra_data: { extra_pnginfo: { workflow: template.workflow } } }) });
       const queued = await response.json();
       if (!response.ok) throw new Error(`キュー登録失敗: ${JSON.stringify(queued.node_errors ?? queued.error ?? queued)}`);
       await waitDone(queued.prompt_id);
-      const saved = savedBySession.get(session);
+      // The websocket notice can be missed; the saved data on disk is the fallback.
+      let saved = savedBySession.get(session);
+      if (!saved) {
+        const latest = await request({ action: "latest_clip", session });
+        if (latest && !made.includes(latest)) saved = latest;
+      }
       if (!saved) throw new Error(`記録 #${record.number} の保存データが作られませんでした。`);
       made.push(saved);
       await request({ action: "save_progress", folder, list, progress: { session, made } });
