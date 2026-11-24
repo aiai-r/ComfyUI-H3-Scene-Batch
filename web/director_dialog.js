@@ -46,7 +46,8 @@ export class DirectorLLM {
     const response = await api.fetchApi("/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt: graph, client_id: api.clientId }) });
     const queued = await response.json();
-    if (!response.ok) throw new Error(`LLMキュー登録失敗: ${JSON.stringify(queued.node_errors ?? queued.error ?? queued)}`);
+    // h3Logged: ComfyUI has already written this failure to its own log.
+    if (!response.ok) throw Object.assign(new Error(`LLMキュー登録失敗: ${JSON.stringify(queued.node_errors ?? queued.error ?? queued)}`), { h3Logged: true });
     this.promptId = queued.prompt_id;
     if (this.cancelled) await this.stop();
     try {
@@ -57,7 +58,7 @@ export class DirectorLLM {
         if (this.cancelled) break;
         if (history?.status?.status_str === "error") {
           const failure = history.status.messages?.find(([name]) => name === "execution_error")?.[1];
-          throw new Error(failure?.exception_message ?? "LLM処理が失敗しました。");
+          throw Object.assign(new Error(failure?.exception_message ?? "LLM処理が失敗しました。"), { h3Logged: true });
         }
         if (history?.status?.completed) {
           const text = history.outputs?.result?.text?.[0];

@@ -90,7 +90,12 @@ function patchQueue() {
     if (helpers.length > 1) { notify("H3 DaSiWa Promptは1つだけにしてください。", true); throw new Error("H3 DaSiWa Promptは1つだけにしてください。"); }
     if (widget(helper, "enabled")?.value) {
       try { await createPrompt(helper, notify); }
-      catch (error) { notify(error.message, true); throw error; }
+      catch (error) {
+        notify(error.message, true);
+        // Already in ComfyUI's log: cancel this run quietly instead of raising the error dialog.
+        if (error.h3Logged) return {};
+        throw error;
+      }
       // Rebuild so the queued body carries the prompt just written into the Director.
       data = await app.graphToPrompt();
     }
