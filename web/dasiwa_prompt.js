@@ -120,6 +120,13 @@ function attach(node) {
   if (recordName) recordName.label = "記録名";
   const record = widget(node, "record");
   if (record) record.label = "生成を記録する";
+  if (enabled) {
+    // Shown with the buttons. The saved widget stays in place so old workflows load the same.
+    enabled.hidden = true; enabled.options = { ...(enabled.options || {}), hidden: true };
+    const toggle = node.addWidget("toggle", "実行時にPrompt作成→生成", enabled.value, () => {});
+    Object.defineProperty(toggle, "value", { get: () => enabled.value, set: value => { enabled.value = value; } });
+    toggle.serialize = false;
+  }
   node.addWidget("button", "Prompt作成のみ", null, () => createPrompt(node, (text, failed) => node.h3Status(text, failed))
     .catch(error => node.h3Status(error.message, true))).serialize = false;
   node.addWidget("button", "LLM設定", null, () => { try { openLLMSettings(node); } catch (error) { node.h3Status(error.message, true); } }).serialize = false;
